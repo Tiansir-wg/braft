@@ -66,3 +66,4 @@ for ((i=0; i<$FLAGS_server_num; ++i)); do
         -port=$((${FLAGS_port}+i)) -conf="${raft_peers}" > std.log 2>&1 &
     cd ../..
 done
+# gdbserver :2333 ./block_server -bthread_concurrency=18 -crash_on_fatal_log=true -raft_max_segment_size=8388608 -raft_sync=true -port=8200 -conf=192.168.108.2:8200:0192.168.108.2:8201:0192.168.108.2:8202:0
