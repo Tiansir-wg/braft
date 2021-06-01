@@ -48,14 +48,14 @@ done
 
 export TCMALLOC_SAMPLE_PARAMETER=524288
 
-# ${VALGRIND} ./block_client \
-#         --write_percentage=${FLAGS_write_percentage} \
-#         --bthread_concurrency=${FLAGS_bthread_concurrency} \
-#         --conf="${raft_peers}" \
-#         --crash_on_fatal_log=${FLAGS_crash_on_fatal} \
-#         --log_each_request=${FLAGS_log_each_request} \
-#         --thread_num=${FLAGS_thread_num} \
-#         --use_bthread=${FLAGS_use_bthread} \
+${VALGRIND} ./block_client \
+        --write_percentage=${FLAGS_write_percentage} \
+        --bthread_concurrency=${FLAGS_bthread_concurrency} \
+        --conf="${raft_peers}" \
+        --crash_on_fatal_log=${FLAGS_crash_on_fatal} \
+        --log_each_request=${FLAGS_log_each_request} \
+        --thread_num=${FLAGS_thread_num} \
+        --use_bthread=${FLAGS_use_bthread} \
     
-gdbserver :2333 ${VALGRIND} ./block_client --write_percentage=100 --bthread_concurrency=8 --conf=192.168.108.2:8200:0,192.168.108.2:8201:0,192.168.108.2:8202:0, --crash_on_fatal_log=true --log_each_request=false --thread_num=1 --use_bthread=true
+# gdbserver :2333 ${VALGRIND} ./block_client --write_percentage=100 --bthread_concurrency=8 --conf=192.168.108.2:8200:0,192.168.108.2:8201:0,192.168.108.2:8202:0, --crash_on_fatal_log=true --log_each_request=false --thread_num=1 --use_bthread=true
 

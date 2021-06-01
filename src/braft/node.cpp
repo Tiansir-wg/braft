@@ -504,6 +504,7 @@ namespace braft
 
         _config_manager = new ConfigurationManager();
 
+        // 对队列中的task执行execute_applying_tasks操作
         if (bthread::execution_queue_start(&_apply_queue_id, NULL,
                                            execute_applying_tasks, this) != 0)
         {
@@ -679,6 +680,7 @@ namespace braft
         DEFINE_SMALL_ARRAY(LogEntryAndClosure, tasks, batch_size, 256);
         size_t cur_size = 0;
         NodeImpl *m = (NodeImpl *)meta;
+        // 每batch_size个task进行一次批量apply
         for (; iter; ++iter)
         {
             if (cur_size == batch_size)
@@ -688,6 +690,7 @@ namespace braft
             }
             tasks[cur_size++] = *iter;
         }
+        // 不足batch_size数量的task进行一次批量apply
         if (cur_size > 0)
         {
             m->apply(tasks, cur_size);
@@ -1490,6 +1493,7 @@ namespace braft
         }
     }
 
+    // 节点收到requestvote后的响应
     void NodeImpl::handle_request_vote_response(const PeerId &peer_id, const int64_t term,
                                                 const int64_t ctx_version,
                                                 const RequestVoteResponse &response)
@@ -1506,6 +1510,7 @@ namespace braft
         }
 
         // check state
+        // 确认当前状态是不是candidate
         if (_state != STATE_CANDIDATE)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1514,6 +1519,7 @@ namespace braft
             return;
         }
         // check stale response
+
         if (term != _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1522,6 +1528,7 @@ namespace braft
             return;
         }
         // check response term
+        // 如果收到的term大于自身的term，则回退到follower状态
         if (response.term() > _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1548,6 +1555,7 @@ namespace braft
         {
             _vote_ctx.set_disrupted_leader(DisruptedLeader(peer_id, response.previous_term()));
         }
+        // 获得了该节点的投票
         if (response.granted())
         {
             _vote_ctx.grant(peer_id);
@@ -1556,6 +1564,7 @@ namespace braft
                 _vote_ctx.grant(_server_id);
                 _vote_ctx.stop_grant_self_timer(this);
             }
+            // 赢得选举
             if (_vote_ctx.granted())
             {
                 return become_leader();
@@ -2097,18 +2106,23 @@ namespace braft
     void NodeImpl::check_step_down(const int64_t request_term, const PeerId &server_id)
     {
         butil::Status status;
+        // 请求的term比当前term大，当前节点step_down
         if (request_term > _current_term)
         {
             status.set_error(ENEWLEADER, "Raft node receives message from "
                                          "new leader with higher term.");
             step_down(request_term, false, status);
         }
+        // 不可能请求的term比当前term小，因为check之前就已经处理了
+        // 运行到这里说明请求的term和当前的term相等
+        // follower不进行step down
         else if (_state != STATE_FOLLOWER)
         {
             status.set_error(ENEWLEADER, "Candidate receives message "
                                          "from new leader with the same term.");
             step_down(request_term, false, status);
         }
+        // follower还没有leader
         else if (_leader_id.is_empty())
         {
             status.set_error(ENEWLEADER, "Follower receives message "
@@ -2116,6 +2130,7 @@ namespace braft
             step_down(request_term, false, status);
         }
         // save current leader
+        // 设置当前节点的leader
         if (_leader_id.is_empty())
         {
             reset_leader_id(server_id, status);
@@ -2243,6 +2258,7 @@ namespace braft
         delete this;
     }
 
+    // 批量apply参数tasks数组中的task
     void NodeImpl::apply(LogEntryAndClosure tasks[], size_t size)
     {
         g_apply_tasks_batch_counter << size;
@@ -2268,6 +2284,7 @@ namespace braft
             }
             lck.unlock();
             BRAFT_VLOG << "node " << _group_id << ":" << _server_id << " can't apply : " << st;
+            // 执行task的回调函数，释放task
             for (size_t i = 0; i < size; ++i)
             {
                 tasks[i].entry->Release();
@@ -2279,6 +2296,7 @@ namespace braft
             }
             return;
         }
+        // 组装log entry
         for (size_t i = 0; i < size; ++i)
         {
             if (tasks[i].expected_term != -1 && tasks[i].expected_term != _current_term)
@@ -2303,6 +2321,8 @@ namespace braft
                                              _conf.stable() ? NULL : &_conf.old_conf,
                                              tasks[i].done);
         }
+
+        // 通过log_manager执行append日志操作
         _log_manager->append_entries(&entries,
                                      new LeaderStableClosure(
                                          NodeId(_group_id, _server_id),
@@ -2516,11 +2536,13 @@ namespace braft
             }
 
             // save
+            // request中的log比自身新且当前节点还未进行投票
             if (log_is_ok && _voted_id.is_empty())
             {
                 butil::Status status;
                 status.set_error(EVOTEFORCANDIDATE, "Raft node votes for some candidate, "
                                                     "step down to restart election_timer.");
+                // 回退到follower状态
                 step_down(request->term(), false, status);
                 _voted_id = candidate_id;
                 //TODO: outof lock
@@ -2657,6 +2679,7 @@ namespace braft
         std::unique_lock<raft_mutex_t> lck(_mutex);
 
         // pre set term, to avoid get term in lock
+        // 将当前的term发送给leader
         response->set_term(_current_term);
 
         if (!is_active_state(_state))
@@ -2687,6 +2710,7 @@ namespace braft
         }
 
         // check stale term
+        // 请求的term比当前节点的term小则拒绝
         if (request->term() < _current_term)
         {
             const int64_t saved_current_term = _current_term;
@@ -2703,6 +2727,7 @@ namespace braft
         // check term and state to step down
         check_step_down(request->term(), server_id);
 
+        // 另一个节点申明是leader
         if (server_id != _leader_id)
         {
             LOG(ERROR) << "Another peer " << _group_id << ":" << server_id
