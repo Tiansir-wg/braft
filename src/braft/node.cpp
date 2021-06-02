@@ -499,7 +499,7 @@ namespace braft
         CHECK_EQ(0, _election_timer.init(this, options.election_timeout_ms));
         // 如果conf不为空，会调用step_down将自己的_state初始化为follower并启动
         CHECK_EQ(0, _stepdown_timer.init(this, options.election_timeout_ms));
-        // 定期保存快照
+        // 保存快照相关的计时器，超时后会执行快照
         CHECK_EQ(0, _snapshot_timer.init(this, options.snapshot_interval_s * 1000));
 
         _config_manager = new ConfigurationManager();
@@ -1299,22 +1299,26 @@ namespace braft
         PeerId peer_id = peer;
         // if peer_id is ANY_PEER(0.0.0.0:0:0), the peer with the largest
         // last_log_id will be selected.
+        // 没有指定目标peer节点
         if (peer_id == ANY_PEER)
         {
             LOG(INFO) << "node " << _group_id << ":" << _server_id
                       << " starts to transfer leadership to any peer.";
             // find the next candidate which is the most possible to become new leader
+            // 从 _replicator_group 中找一个next_index最大的节点作为目标节点
             if (_replicator_group.find_the_next_candidate(&peer_id, _conf) != 0)
             {
                 return -1;
             }
         }
+        // 目标节点是自身
         if (peer_id == _server_id)
         {
             LOG(INFO) << "node " << _group_id << ":" << _server_id
                       << " transfering leadership to self";
             return 0;
         }
+        // 目标节点不在配置中
         if (!_conf.contains(peer_id))
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1322,6 +1326,8 @@ namespace braft
                          << " which doesn't belong to " << _conf.conf;
             return EINVAL;
         }
+
+        // 一切正常，可以正常进行 transfer
         const int64_t last_log_index = _log_manager->last_log_index();
         const int rc = _replicator_group.transfer_leadership_to(peer_id, last_log_index);
         if (rc != 0)
@@ -1345,16 +1351,19 @@ namespace braft
             }
             return rc;
         }
+        // leader设置自身状态为STATE_TRANSFERRING表示正在进行状态交接
         _state = STATE_TRANSFERRING;
         butil::Status status;
         status.set_error(ETRANSFERLEADERSHIP, "Raft leader is transferring "
                                               "leadership to %s",
                          peer_id.to_string().c_str());
+        // 调用状态机的on_leader_stop
         _leader_lease.on_leader_stop();
         _fsm_caller->on_leader_stop(status);
         LOG(INFO) << "node " << _group_id << ":" << _server_id
                   << " starts to transfer leadership to " << peer_id;
         _stop_transfer_arg = new StopTransferArg(this, _current_term, peer_id);
+        // 开启_transfer_timer计时器，如果超时还没有transfer成功，就调用NodeImpl::handle_transfer_timeout停止transfer，并将_state设置回leader
         if (bthread_timer_add(&_transfer_timer,
                               butil::milliseconds_from_now(_options.election_timeout_ms),
                               on_transfer_timeout, _stop_transfer_arg) != 0)
@@ -2944,6 +2953,7 @@ namespace braft
         }
     }
 
+    // follower收到InstallSnapshot RPC后，会调用此函数
     void NodeImpl::handle_install_snapshot_request(brpc::Controller *cntl,
                                                    const InstallSnapshotRequest *request,
                                                    InstallSnapshotResponse *response,
@@ -2980,6 +2990,7 @@ namespace braft
         }
 
         // check stale term
+        // leader的term比当前节点小, 拒绝该请求
         if (request->term() < _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -2993,6 +3004,7 @@ namespace braft
 
         check_step_down(request->term(), server_id);
 
+        // 当前节点已经有另一个leader，说明发生了脑裂，通过返回比请求中term更大的term使发送请求的leader自动执行step_down
         if (server_id != _leader_id)
         {
             LOG(ERROR) << "Another peer " << _group_id << ":" << server_id
@@ -3017,6 +3029,7 @@ namespace braft
                   << request->meta().last_included_term()
                   << " from " << server_id
                   << " when last_log_id=" << _log_manager->last_log_id();
+        // 调用SnapshotExecutor::install_snapshot
         return _snapshot_executor->install_snapshot(
             cntl, request, response, done_guard.release());
     }

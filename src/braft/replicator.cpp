@@ -723,7 +723,7 @@ namespace braft
         std::unique_ptr<brpc::Controller> cntl(new brpc::Controller);
         std::unique_ptr<AppendEntriesRequest> request(new AppendEntriesRequest);
         std::unique_ptr<AppendEntriesResponse> response(new AppendEntriesResponse);
-        // 填充request，安装快照
+        // 填充request，返回值不为0说明没有找到对应的entry，需要同步快照
         if (_fill_common_fields(request.get(), _next_index - 1, false) != 0)
         {
             _reset_next_index();
@@ -871,8 +871,10 @@ namespace braft
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
     }
 
+    // 安装快照
     void Replicator::_install_snapshot()
     {
+        // 判断_reader是否为空，不为空说明有另一个快照正在安装
         if (_reader)
         {
             // follower's readonly mode change may cause two install_snapshot
@@ -885,7 +887,7 @@ namespace braft
             CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
             return;
         }
-
+        // 检查当前任务是否超过上限，如果是leader则没有限制
         if (_options.snapshot_throttle && !_options.snapshot_throttle->add_one_more_task(true))
         {
             return _block(butil::gettimeofday_us(), EBUSY);
@@ -893,8 +895,9 @@ namespace braft
 
         // pre-set replicator state to INSTALLING_SNAPSHOT, so replicator could be
         // blocked if something is wrong, such as throttled for a period of time
+        // 将状态设置为INSTALLING_SNAPSHOT
         _st.st = INSTALLING_SNAPSHOT;
-
+        // 调用LocalSnapshotStorage::open得到一个reader，指向最新的快照文件，并且会把snapshot meta从文件加载到_meta_table里面
         _reader = _options.snapshot_storage->open();
         if (!_reader)
         {
@@ -912,6 +915,8 @@ namespace braft
             node_impl->Release();
             return;
         }
+        // 调用LocalSnapshotReader::generate_uri_for_copy，该函数会通过调用file_service_add把reader添加到file_service里面，
+        // 然后返回一个uri。follower通过uri去下载快照文件。uri的格式为："remote://" + _addr + "/" + _reader_id
         std::string uri = _reader->generate_uri_for_copy();
         // NOTICE: If uri is something wrong, retry later instead of reporting error
         // immediately(making raft Node error), as FileSystemAdaptor layer of _reader is
@@ -924,6 +929,7 @@ namespace braft
             _close_reader();
             return _block(butil::gettimeofday_us(), EBUSY);
         }
+        // 加载meta
         SnapshotMeta meta;
         // report error on failure
         if (_reader->load_meta(&meta) != 0)
@@ -939,6 +945,7 @@ namespace braft
             node_impl->Release();
             return;
         }
+        // 构造cntl和request
         brpc::Controller *cntl = new brpc::Controller;
         cntl->set_max_retry(0);
         cntl->set_timeout_ms(-1);
@@ -960,6 +967,7 @@ namespace braft
         _install_snapshot_counter++;
         _st.last_log_included = meta.last_included_index();
         _st.last_term_included = meta.last_included_term();
+        // 调用RaftService::install_snapshot发起InstallSnapshot RPC，其中回调函数为_on_install_snapshot_returned
         google::protobuf::Closure *done = brpc::NewCallback<
             ReplicatorId, brpc::Controller *,
             InstallSnapshotRequest *, InstallSnapshotResponse *>(
@@ -970,6 +978,7 @@ namespace braft
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
     }
 
+    //
     void Replicator::_on_install_snapshot_returned(
         ReplicatorId id, brpc::Controller *cntl,
         InstallSnapshotRequest *request,
@@ -1212,6 +1221,7 @@ namespace braft
         if (_has_succeeded && _min_flying_index() > log_index)
         {
             // _id is unlock in _send_timeout_now
+            // 向follower发送_send_timeout_now请求使其超时触发新一轮的选举
             _send_timeout_now(true, false);
             return 0;
         }
