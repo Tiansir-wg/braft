@@ -387,6 +387,7 @@ namespace braft
             // Node is currently the leader and |entries| are from the user who
             // don't know the correct indexes the logs should assign to. So we have
             // to assign indexes to the appending entries
+
             // 为log entry分配index
             for (size_t i = 0; i < entries->size(); ++i)
             {
@@ -493,7 +494,8 @@ namespace braft
             return run_closure_in_bthread(done);
         }
         std::unique_lock<raft_mutex_t> lck(_mutex);
-        // 解决冲突
+        // leader: 为entry分配index
+        // follower: 解决冲突
         if (!entries->empty() && check_and_resolve_conflict(entries, done) != 0)
         {
             lck.unlock();
@@ -505,7 +507,7 @@ namespace braft
             entries->clear();
             return;
         }
-        // 存放配置操作信息的entry
+        // 存放配置信息的entry
         for (size_t i = 0; i < entries->size(); ++i)
         {
             // Add ref for disk_thread
@@ -517,7 +519,7 @@ namespace braft
             }
         }
 
-        // 将处理之后的全部entry放到 _logs_in_memory 队列
+        // 将处理之后的全部entry放到 _logs_in_memory 缓存
         if (!entries->empty())
         {
             done->_first_log_index = entries->front()->id.index;
@@ -525,7 +527,8 @@ namespace braft
         }
 
         done->_entries.swap(*entries);
-        // 将 entry 同步到 disk_queue
+
+        // 将 entry 同步到 disk_queue, 调用 LogManager::disk_thread
         int ret = bthread::execution_queue_execute(_disk_queue, done);
         CHECK_EQ(0, ret) << "execq execute failed, ret: " << ret << " err: " << berror();
         // 唤醒等待线程
@@ -636,6 +639,7 @@ namespace braft
         LogManager *_lm;
     };
 
+    // 将entry持久化到storage中
     int LogManager::disk_thread(void *meta,
                                 bthread::TaskIterator<StableClosure *> &iter)
     {
@@ -648,6 +652,7 @@ namespace braft
         // FIXME(chenzhangyi01): it's buggy
         LogId last_id = log_manager->_disk_id;
         StableClosure *storage[256];
+        // 分批次写入文件
         AppendBatcher ab(storage, ARRAY_SIZE(storage), &last_id, log_manager);
 
         for (; iter; ++iter)
@@ -719,6 +724,7 @@ namespace braft
                 {
                     log_manager->report_error(ret, "Failed operation on LogStorage");
                 }
+                // 调用 LeaderStableClosure::Run()
                 done->Run();
             }
         }

@@ -525,10 +525,10 @@ namespace braft
             VoteBallotCtx *vote_ctx;
         };
 
-        State _state;
-        int64_t _current_term;
-        PeerId _leader_id;
-        PeerId _voted_id;
+        State _state;                // 当前节点状态: Leader、follower
+        int64_t _current_term;       // 当前节点所处的任期
+        PeerId _leader_id;           // 当前任期的leader
+        PeerId _voted_id;            // 票投给谁了
         VoteBallotCtx _vote_ctx;     // candidate vote ctx
         VoteBallotCtx _pre_vote_ctx; // prevote ctx
         ConfigurationEntry _conf;

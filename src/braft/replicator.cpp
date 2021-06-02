@@ -129,8 +129,10 @@ namespace braft
                   << ", group " << r->_options.group_id;
         r->_catchup_closure = NULL;
         r->_update_last_rpc_send_timestamp(butil::monotonic_time_ms());
+        //开启心跳计时器
         r->_start_heartbeat_timer(butil::gettimeofday_us());
         // Note: r->_id is unlock in _send_empty_entries, don't touch r ever after
+        //发送空的entry向其他节点通告自己是leader，其他节点收到第一个空的entry就会回退成follower并把自己的leader_id设置成request里面包含的serverId
         r->_send_empty_entries(false);
         return 0;
     }
@@ -370,6 +372,7 @@ namespace braft
         std::unique_ptr<brpc::Controller> cntl_guard(cntl);
         std::unique_ptr<AppendEntriesRequest> req_guard(request);
         std::unique_ptr<AppendEntriesResponse> res_guard(response);
+        // 获取对应的 replicator
         Replicator *r = NULL;
         bthread_id_t dummy_id = {id};
         const long start_time_us = butil::gettimeofday_us();
@@ -409,6 +412,7 @@ namespace braft
             return;
         }
 
+        // 如果RPC立马返回失败，说明follower crash了，需要将follower阻塞一段时间
         if (cntl->Failed())
         {
             ss << " fail, sleep.";
@@ -428,8 +432,11 @@ namespace braft
             return r->_block(start_time_us, cntl->ErrorCode());
         }
         r->_consecutive_error_times = 0;
+
+        // follower拒绝了请求
         if (!response->success())
         {
+            // 响应的节点的term比当前节点的term大
             if (response->term() > r->_options.term)
             {
                 BRAFT_VLOG << " fail, greater term " << response->term()
@@ -446,6 +453,7 @@ namespace braft
                                                       "%s from peer:%s",
                                  response->GetTypeName().c_str(), r->_options.peer_id.to_string().c_str());
                 r->_destroy();
+                // 更新当前节点的term
                 node_impl->increase_term_to(response->term(), status);
                 node_impl->Release();
                 return;
@@ -457,6 +465,8 @@ namespace braft
             r->_update_last_rpc_send_timestamp(rpc_send_time);
             // prev_log_index and prev_log_term doesn't match
             r->_reset_next_index();
+
+            // 如果follower的last_log_index比_next_index小，则更新_next_index，下一次向follower复制日志时从该位置开始
             if (response->last_log_index() + 1 < r->_next_index)
             {
                 BRAFT_VLOG << "Group " << r->_options.group_id
@@ -465,6 +475,9 @@ namespace braft
                 // The peer contains less logs than leader
                 r->_next_index = response->last_log_index() + 1;
             }
+
+            // 如果follower的last_log_index比_next_index大,说明follower的日志需要截断
+            // 需要逐步减小_next_index并发送空的entry，以确定匹配的位置
             else
             {
                 // The peer contains logs from old term which should be truncated,
@@ -488,6 +501,7 @@ namespace braft
             return;
         }
 
+        // 运行到此处说明follower接受了请求
         ss << " success";
         BRAFT_VLOG << ss.str();
 
@@ -627,6 +641,8 @@ namespace braft
             butil::monotonic_time_ms());
 
         RaftService_Stub stub(&_sending_channel);
+
+        // 其他节点收到心跳entry的rpc后，会调用 handle_append_entries_request
         stub.append_entries(cntl.release(), request.release(),
                             response.release(), done);
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
@@ -1065,6 +1081,8 @@ namespace braft
         const timespec due_time = butil::milliseconds_from(
             butil::microseconds_to_timespec(start_time_us),
             *_options.dynamic_heartbeat_timeout_ms);
+
+        // 开启 _heartbeat_timer,超时时执行_on_timedout
         if (bthread_timer_add(&_heartbeat_timer, due_time,
                               _on_timedout, (void *)_id.value) != 0)
         {
@@ -1072,6 +1090,7 @@ namespace braft
         }
     }
 
+    //发送心跳,本质就是发送空的entry
     void *Replicator::_send_heartbeat(void *arg)
     {
         Replicator *r = NULL;
@@ -1104,6 +1123,7 @@ namespace braft
             r->_destroy();
             return 0;
         }
+        //  心跳计时器超时后调用 _send_heartbeat
         else if (error_code == ETIMEDOUT)
         {
             // This error is issued in the TimerThread, start a new bthread to avoid
@@ -1546,6 +1566,7 @@ namespace braft
     int ReplicatorGroup::add_replicator(const PeerId &peer)
     {
         CHECK_NE(0, _common_options.term);
+        // 已经存在不要重复添加
         if (_rmap.find(peer) != _rmap.end())
         {
             return 0;

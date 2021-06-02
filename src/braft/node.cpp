@@ -700,7 +700,7 @@ namespace braft
 
     void NodeImpl::apply(const Task &task)
     {
-        // 构造LogEntry, 每个LogEntry代表一个日志条目
+        // 构造LogEntry
         LogEntry *entry = new LogEntry;
         entry->AddRef();
         entry->data.swap(*task.data);
@@ -2106,7 +2106,7 @@ namespace braft
     void NodeImpl::check_step_down(const int64_t request_term, const PeerId &server_id)
     {
         butil::Status status;
-        // 请求的term比当前term大，当前节点step_down
+        // 请求中的term比当前节点的term大，当前节点step_down
         if (request_term > _current_term)
         {
             status.set_error(ENEWLEADER, "Raft node receives message from "
@@ -2115,14 +2115,14 @@ namespace braft
         }
         // 不可能请求的term比当前term小，因为check之前就已经处理了
         // 运行到这里说明请求的term和当前的term相等
-        // follower不进行step down
+        // 所有活跃状态中除了follower状态之外， 其他状态需要进行step_down
         else if (_state != STATE_FOLLOWER)
         {
             status.set_error(ENEWLEADER, "Candidate receives message "
                                          "from new leader with the same term.");
             step_down(request_term, false, status);
         }
-        // follower还没有leader
+        // 运行到此处说明请求的term和当前节点的term相等，且当前节点是follower，但是当前节点还没有 leader
         else if (_leader_id.is_empty())
         {
             status.set_error(ENEWLEADER, "Follower receives message "
@@ -2130,7 +2130,7 @@ namespace braft
             step_down(request_term, false, status);
         }
         // save current leader
-        // 设置当前节点的leader
+        // 如果当前节点还没有leader，则将请求的节点设置为当前节点的leader
         if (_leader_id.is_empty())
         {
             reset_leader_id(server_id, status);
@@ -2157,6 +2157,7 @@ namespace braft
     };
 
     // in lock
+    // candidate赢得选举之后会调用become_leader
     void NodeImpl::become_leader()
     {
         CHECK(_state == STATE_CANDIDATE);
@@ -2165,18 +2166,23 @@ namespace braft
                   << " become leader of group " << _conf.conf
                   << " " << _conf.old_conf;
         // cancel candidate vote timer
+        // _vote_timer用于控制拉选票的时间，一旦candidate成为leader就可以停止该计时器
         _vote_timer.stop();
         _vote_ctx.reset(this);
 
+        // 修改当前节点状态为leader
         _state = STATE_LEADER;
         _leader_id = _server_id;
 
+        // 设置 _replicator_group  的任期为当前任期
+        // _replicator_group 是啥?
         _replicator_group.reset_term(_current_term);
         _follower_lease.reset();
         _leader_lease.on_leader_start(_current_term);
 
         std::set<PeerId> peers;
         _conf.list_peers(&peers);
+        // 将其他节点添加到 _replicator_group
         for (std::set<PeerId>::const_iterator
                  iter = peers.begin();
              iter != peers.end(); ++iter)
@@ -2233,6 +2239,7 @@ namespace braft
             if (_ballot_box)
             {
                 // ballot_box check quorum ok, will call fsm_caller
+
                 _ballot_box->commit_at(
                     _first_log_index, _first_log_index + _nentries - 1, _node_id.peer_id);
             }
@@ -2267,6 +2274,7 @@ namespace braft
         entries.reserve(size);
         std::unique_lock<raft_mutex_t> lck(_mutex);
         bool reject_new_user_logs = (_node_readonly || _majority_nodes_readonly);
+        // 当前节点不是leader或者集群不可写
         if (_state != STATE_LEADER || reject_new_user_logs)
         {
             butil::Status st;
@@ -2299,6 +2307,7 @@ namespace braft
         // 组装log entry
         for (size_t i = 0; i < size; ++i)
         {
+            // expected_term是啥？？？
             if (tasks[i].expected_term != -1 && tasks[i].expected_term != _current_term)
             {
                 BRAFT_VLOG << "node " << _group_id << ":" << _server_id
@@ -2667,6 +2676,7 @@ namespace braft
         int64_t _term;
     };
 
+    // 节点接收到 _append_entries_ 请求后的处理
     void NodeImpl::handle_append_entries_request(brpc::Controller *cntl,
                                                  const AppendEntriesRequest *request,
                                                  AppendEntriesResponse *response,
@@ -2682,6 +2692,7 @@ namespace braft
         // 将当前的term发送给leader
         response->set_term(_current_term);
 
+        // 只有活跃状态的节点才能处理
         if (!is_active_state(_state))
         {
             const int64_t saved_current_term = _current_term;
@@ -2697,6 +2708,7 @@ namespace braft
         }
 
         PeerId server_id;
+        //从请求中获取请求的server_id
         if (0 != server_id.parse(request->server_id()))
         {
             lck.unlock();
@@ -2710,7 +2722,7 @@ namespace braft
         }
 
         // check stale term
-        // 请求的term比当前节点的term小则拒绝
+        // 发起请求节点的term比当前节点的term小则拒绝该请求
         if (request->term() < _current_term)
         {
             const int64_t saved_current_term = _current_term;
@@ -2727,7 +2739,7 @@ namespace braft
         // check term and state to step down
         check_step_down(request->term(), server_id);
 
-        // 另一个节点申明是leader
+        // 当前节点已经有另一个leader，拒绝该请求
         if (server_id != _leader_id)
         {
             LOG(ERROR) << "Another peer " << _group_id << ":" << server_id
@@ -2749,6 +2761,7 @@ namespace braft
             _follower_lease.renew(_leader_id);
         }
 
+        // 当前节点正在安装快照则拒绝该请求
         if (request->entries_size() > 0 &&
             (_snapshot_executor && _snapshot_executor->is_installing_snapshot()))
         {
@@ -2758,9 +2771,13 @@ namespace braft
             return;
         }
 
+        // leader节点前一个log entry的term和index
         const int64_t prev_log_index = request->prev_log_index();
         const int64_t prev_log_term = request->prev_log_term();
+        // 当前节点在该位置处log entry的term
         const int64_t local_prev_log_term = _log_manager->get_term(prev_log_index);
+
+        // 当前节点在该位置处没有对应的term则拒绝append
         if (local_prev_log_term != prev_log_term)
         {
             int64_t last_index = _log_manager->last_log_index();
@@ -2788,6 +2805,7 @@ namespace braft
             }
 
             response->set_success(false);
+            // 返回当前节点的任期和最新的log entry的index以便leader确定重发的位置
             response->set_term(_current_term);
             response->set_last_log_index(last_index);
             lck.unlock();
