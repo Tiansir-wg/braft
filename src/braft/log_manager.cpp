@@ -344,9 +344,10 @@ namespace braft
         return 0;
     }
 
+    // 将entry数组中的entry从last_index_kept位置之后截断
     void LogManager::unsafe_truncate_suffix(const int64_t last_index_kept)
     {
-
+        // 截断的日志不能是已经apply过的
         if (last_index_kept < _applied_id.index)
         {
             LOG(FATAL) << "Can't truncate logs before _applied_id=" << _applied_id.index
@@ -354,6 +355,7 @@ namespace braft
             return;
         }
 
+        // 从后往前截断到last_index_kept，即发生冲突的全部截断了
         while (!_logs_in_memory.empty())
         {
             LogEntry *entry = _logs_in_memory.back();
@@ -402,7 +404,7 @@ namespace braft
             // Node is currently a follower and |entries| are from the leader. We
             // should check and resolve the confliction between the local logs and
             // |entries|
-            // 确保新来的日志与以前的日志是连续的
+            // 如果发过来的第一个entry的index大于follower的_last_log_index+1,说明日志是不连续的，返回-1
             // 改成: 就算不连续，只要不冲突就可以commit
             if (entries->front()->id.index > _last_log_index + 1)
             {
@@ -410,7 +412,9 @@ namespace braft
                                          entries->front()->id.index, _last_log_index);
                 return -1;
             }
-            // 判断重复apply
+            // 日志连续，但是可能会有重复
+            // 如果发过来的最后一个log entry的index比applied_index小，那么说明当前发过来的所有entry
+            // 都已经apply过了，即重复了
             // 改成: 如果所有的entry都已经apply，才返回1
             const int64_t applied_index = _applied_id.index;
             if (entries->back()->id.index <= applied_index)
@@ -421,13 +425,15 @@ namespace braft
                              << ", return immediately with nothing changed";
                 return 1;
             }
-            // entries数组的第一个entry与之前已提交的连续最大的entry连续，则修改_last_log_index
+            // 发过来的第一个entry与之前已提交的连续最大的entry连续，说明没有冲突，修改_last_log_index即可
+            // ???疑问: 怎么保证发过来的entries是连续的???
             if (entries->front()->id.index == _last_log_index + 1)
             {
                 // Fast path
                 _last_log_index = entries->back()->id.index;
             }
-            // 不连续
+            // 发过来的第一个entry与之前已提交的entry重叠了，可能会发生冲突
+            // 因此遍历entrys找到第一个冲突的位置
             else
             {
                 // Appending entries overlap the local ones. We should find if there
@@ -443,7 +449,7 @@ namespace braft
                         break;
                     }
                 }
-                // 冲突位置不等于entry数组长度，也就是有冲突
+                // 冲突位置不等于entry数组长度，也就是发生了冲突
                 if (conflicting_index != entries->size())
                 {
                     // conflicting_index到_last_log_index之间的部分应该截断
@@ -463,7 +469,8 @@ namespace braft
                 // Release all the entries before the conflicting_index and the rest
                 // would be append to _logs_in_memory and _log_storage after this
                 // function returns
-                // conflict之前的，就都不用存了，只存conflict之后的就行了
+
+                // conflict之前的，已经提交了，都不用存了
                 for (size_t i = 0; i < conflicting_index; ++i)
                 {
                     (*entries)[i]->Release();
@@ -496,6 +503,7 @@ namespace braft
         std::unique_lock<raft_mutex_t> lck(_mutex);
         // leader: 为entry分配index
         // follower: 解决冲突
+        // 如果有冲突，则释放所有entries并返回
         if (!entries->empty() && check_and_resolve_conflict(entries, done) != 0)
         {
             lck.unlock();
@@ -507,11 +515,11 @@ namespace braft
             entries->clear();
             return;
         }
-        // 存放配置信息的entry
         for (size_t i = 0; i < entries->size(); ++i)
         {
             // Add ref for disk_thread
             (*entries)[i]->AddRef();
+            // 如果是存放配置信息的 entry 则将其交给 _config_manager 进行管理
             if ((*entries)[i]->type == ENTRY_TYPE_CONFIGURATION)
             {
                 ConfigurationEntry conf_entry(*((*entries)[i]));
@@ -519,7 +527,7 @@ namespace braft
             }
         }
 
-        // 将处理之后的全部entry放到 _logs_in_memory 缓存
+        // 将处理之后的全部entry插入到截断之后的 _logs_in_memory 缓存
         if (!entries->empty())
         {
             done->_first_log_index = entries->front()->id.index;
@@ -528,7 +536,7 @@ namespace braft
 
         done->_entries.swap(*entries);
 
-        // 将 entry 同步到 disk_queue, 调用 LogManager::disk_thread
+        // 将 entry 同步到 disk_queue, 调用 LogManager::disk_thread 进行持久化
         int ret = bthread::execution_queue_execute(_disk_queue, done);
         CHECK_EQ(0, ret) << "execq execute failed, ret: " << ret << " err: " << berror();
         // 唤醒等待线程
@@ -940,7 +948,9 @@ namespace braft
         }
         BAIDU_SCOPED_LOCK(_mutex);
 
+        // 获取新配置
         const ConfigurationEntry &last_conf = _config_manager->last_configuration();
+        // 当前配置不是新配置则将新配置设置为 current
         if (current->id != last_conf.id)
         {
             *current = last_conf;

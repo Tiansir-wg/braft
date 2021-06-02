@@ -347,9 +347,9 @@ namespace braft
             {
                 // Don't change the order if you are not sure about the usage
                 STAGE_NONE = 0,
-                STAGE_CATCHING_UP = 1,
-                STAGE_JOINT = 2,
-                STAGE_STABLE = 3,
+                STAGE_CATCHING_UP = 1, // 追赶状态, 如果有新的节点加入就需要追赶之后再配置变更
+                STAGE_JOINT = 2,       // 一致状态，新旧配置共同起作用
+                STAGE_STABLE = 3,      // 稳定状态，说明新的配置在majority上提交了，进入稳定状态让新配置单独起作用
             };
             ConfigurationCtx(NodeImpl *node) : _node(node), _stage(STAGE_NONE), _version(0), _done(NULL) {}
             void list_new_peers(std::vector<PeerId> *new_peers) const

@@ -220,6 +220,7 @@ namespace braft
         }
     }
 
+    // 构造一个任务提交到execution_queue里面，最后调用FSMCaller::do_committed去调用用户传入的自定义的StateMachine::on_apply函数执行状态机的操作
     int FSMCaller::on_committed(int64_t committed_index)
     {
         ApplyTask t;

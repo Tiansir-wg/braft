@@ -502,9 +502,11 @@ namespace braft
         }
 
         // 运行到此处说明follower接受了请求
+        // 发送空的entry有两个用处:
+        // 1. 通告自己的leader身份，让其他节点设置leader_id
+        // 2. 得到follower的next_index值以便leader节点确定下一个发送entry的位置
         ss << " success";
         BRAFT_VLOG << ss.str();
-
         if (response->term() != r->_options.term)
         {
             LOG(ERROR) << "Group " << r->_options.group_id
@@ -522,6 +524,8 @@ namespace braft
                                         << min_flying_index << ", "
                                         << rpc_last_log_index
                                         << "] to peer " << r->_options.peer_id;
+
+        // entries_size > 0 表示不是空的rpc，此处调用 ballot_box->commit_at进行投票
         if (entries_size > 0)
         {
             r->_options.ballot_box->commit_at(
@@ -561,6 +565,8 @@ namespace braft
         {
             r->_send_timeout_now(false, false);
         }
+
+        // 开始发送entry
         r->_send_entries();
         return;
     }
@@ -648,6 +654,7 @@ namespace braft
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
     }
 
+    // 获取entry
     int Replicator::_prepare_entry(int offset, EntryMeta *em, butil::IOBuf *data)
     {
         if (data->length() >= (size_t)FLAGS_raft_max_body_size)
@@ -655,6 +662,7 @@ namespace braft
             return ERANGE;
         }
         const int64_t log_index = _next_index + offset;
+        // 从log_manager中获取
         LogEntry *entry = _options.log_manager->get_entry(log_index);
         if (entry == NULL)
         {
@@ -715,15 +723,19 @@ namespace braft
         std::unique_ptr<brpc::Controller> cntl(new brpc::Controller);
         std::unique_ptr<AppendEntriesRequest> request(new AppendEntriesRequest);
         std::unique_ptr<AppendEntriesResponse> response(new AppendEntriesResponse);
+        // 填充request，安装快照
         if (_fill_common_fields(request.get(), _next_index - 1, false) != 0)
         {
             _reset_next_index();
             return _install_snapshot();
         }
         EntryMeta em;
+
+        // 计算max_entry_size
         const int max_entries_size = FLAGS_raft_max_entries_size - _flying_append_entries_size;
         int prepare_entry_rc = 0;
         CHECK_GT(max_entries_size, 0);
+        // 获取entry添加到request中
         for (int i = 0; i < max_entries_size; ++i)
         {
             prepare_entry_rc = _prepare_entry(i, &em, &cntl->request_attachment());
@@ -733,6 +745,7 @@ namespace braft
             }
             request->add_entries()->Swap(&em);
         }
+
         if (request->entries_size() == 0)
         {
             // _id is unlock in _wait_more
@@ -744,6 +757,7 @@ namespace braft
             // NOTICE: a follower's readonly mode does not prevent install_snapshot
             // as we need followers to commit conf log(like add_node) when
             // leader reaches readonly as well
+            // 如果request->entries_size() 为0，并且是只读模式, 将状态机设置为idle并返回
             if (prepare_entry_rc == EREADONLY)
             {
                 if (_flying_append_entries_size == 0)
@@ -753,6 +767,9 @@ namespace braft
                 CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
                 return;
             }
+
+            // 否则调用Replicator::_wait_more_entries去等待新的任务到来。
+            // 如果有新的log过来，就会调用_continue_sending继续_send_entrie
             return _wait_more_entries();
         }
 

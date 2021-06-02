@@ -69,15 +69,17 @@ namespace braft
         int64_t last_committed_index = 0;
         const int64_t start_at = std::max(_pending_index, first_log_index);
         Ballot::PosHint pos_hint;
+
         // 检查每一个选票，如果收到了大半follower节点的投票则将其对应的log entry标记为已提交
         for (int64_t log_index = start_at; log_index <= last_log_index; ++log_index)
         {
+            // 从 _pending_meta_queue 中取出Ballot
             Ballot &bl = _pending_meta_queue[log_index - _pending_index];
+            // 调用 grant 将 quoroum 减1， 表示投了一票
             pos_hint = bl.grant(peer, pos_hint);
-            // 是否或得了过半数的投票
+            // quoroum初始值为一般节点数加1， quoroum == 0表示获得了过半数的投票就可以commit了
             if (bl.granted())
             {
-                // 更新 last_committed_index
                 last_committed_index = log_index;
             }
         }
@@ -103,6 +105,7 @@ namespace braft
         _last_committed_index.store(last_committed_index, butil::memory_order_relaxed);
         lck.unlock();
         // The order doesn't matter
+        // 调用 FsmCaller 的 on_committed 方法执行状态机的操作
         _waiter->on_committed(last_committed_index);
         return 0;
     }

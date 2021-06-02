@@ -872,6 +872,7 @@ namespace braft
                                                const Configuration &new_conf,
                                                Closure *done)
     {
+        // 如果不是leader则无法更改配置
         if (_state != STATE_LEADER)
         {
             LOG(WARNING) << "[" << node_id()
@@ -893,6 +894,7 @@ namespace braft
         }
 
         // check concurrent conf change
+        // 当前节点是leader，但是_conf_ctx处于忙碌状态，即有另一个配置变更在发生
         if (_conf_ctx.is_busy())
         {
             LOG(WARNING) << "[" << node_id()
@@ -906,12 +908,14 @@ namespace braft
         }
 
         // Return immediately when the new peers equals to current configuration
+        // 新配置和现有配置一样，不用修改
         if (_conf.conf.equals(new_conf))
         {
             run_closure_in_bthread(done);
             return;
         }
 
+        // 如果不满足上述条件则开始更改配置
         return _conf_ctx.start(old_conf, new_conf, done);
     }
 
@@ -2326,6 +2330,8 @@ namespace braft
             entries.push_back(tasks[i].entry);
             entries.back()->id.term = _current_term;
             entries.back()->type = ENTRY_TYPE_DATA;
+            // 如果刚把配置更新entry放到投票箱, 这里 _conf.stable() 会返回false, 第二个参数会是 _conf.old_conf
+            // 所以在此时产生的任务需要新旧两个配置共同决定是否commit，也就是JOINT状态
             _ballot_box->append_pending_task(_conf.conf,
                                              _conf.stable() ? NULL : &_conf.old_conf,
                                              tasks[i].done);
@@ -2346,12 +2352,15 @@ namespace braft
                                               bool leader_start)
     {
         CHECK(_conf_ctx.is_busy());
+        // 生成 ENTRY_TYPE_CONFIGURATION 类型的Entry,表示这是一个用于配置更新的entry
         LogEntry *entry = new LogEntry();
         entry->AddRef();
         entry->id.term = _current_term;
         entry->type = ENTRY_TYPE_CONFIGURATION;
         entry->peers = new std::vector<PeerId>;
+        // 将entry的peers设置为新配置下的全部节点
         new_conf.list_peers(entry->peers);
+        // 将entry的old_peers设置为原有配置下的全部节点
         if (old_conf)
         {
             entry->old_peers = new std::vector<PeerId>;
@@ -2360,14 +2369,18 @@ namespace braft
         ConfigurationChangeDone *configuration_change_done =
             new ConfigurationChangeDone(this, _current_term, leader_start, _leader_lease.lease_epoch());
         // Use the new_conf to deal the quorum of this very log
+
+        // 将任务放到投票箱获取投票, 成功提交后执行 ConfigurationChangeDone::Run, 进入下一个阶段
         _ballot_box->append_pending_task(new_conf, old_conf, configuration_change_done);
 
         std::vector<LogEntry *> entries;
         entries.push_back(entry);
+        // 调用LogManager::append_entries把entry添加到到内存并持久化
         _log_manager->append_entries(&entries,
                                      new LeaderStableClosure(
                                          NodeId(_group_id, _server_id),
                                          1u, _ballot_box));
+
         _log_manager->check_and_set_configuration(&_conf);
     }
 
@@ -2642,6 +2655,7 @@ namespace braft
             _response->set_success(true);
             _response->set_term(_term);
 
+            // 获取已经commit的日志的index
             const int64_t committed_index =
                 std::min(_request->committed_index(),
                          // ^^^ committed_index is likely less than the
@@ -2652,6 +2666,7 @@ namespace braft
                          // indexes are less than request->committed_index()
                 );
             //_ballot_box is thread safe and tolerates disorder.
+            // 更新commited_index
             _node->_ballot_box->set_last_committed_index(committed_index);
             int64_t now = butil::cpuwide_time_us();
             if (FLAGS_raft_trace_append_entry_latency && now - metric.start_time_us >
@@ -3644,29 +3659,37 @@ namespace braft
         CHECK(!is_busy());
         CHECK(!_done);
         _done = done;
+        // 设置当前状态为 STAGE_CATCHING_UP
         _stage = STAGE_CATCHING_UP;
+        // 获取新旧配置下的全部节点
         old_conf.list_peers(&_old_peers);
         new_conf.list_peers(&_new_peers);
         Configuration adding;
         Configuration removing;
+        // 通过比较新旧配置获取要增加的配置和要删除的配置
         new_conf.diffs(old_conf, &adding, &removing);
+        // 变更次数，涉及多少个节点就有多少次变更
         _nchanges = adding.size() + removing.size();
 
         std::stringstream ss;
         ss << "node " << _node->_group_id << ":" << _node->_server_id
            << " change_peers from " << old_conf << " to " << new_conf;
 
+        // 没有新增节点，说明是删除配置，进入下一个阶段的处理
         if (adding.empty())
         {
             ss << ", begin removing.";
             LOG(INFO) << ss.str();
             return next_stage();
         }
+
+        // 否则需要让新加的节点追赶日志之后才能进入下一个阶段
         ss << ", begin caughtup.";
         LOG(INFO) << ss.str();
         adding.list_peers(&_adding_peers);
         for (std::set<PeerId>::const_iterator iter = _adding_peers.begin(); iter != _adding_peers.end(); ++iter)
         {
+            // 将新加的节点加入到 _replicator_group 中
             if (_node->_replicator_group.add_replicator(*iter) != 0)
             {
                 LOG(ERROR) << "node " << _node->node_id()
@@ -3677,6 +3700,10 @@ namespace braft
                 _node, _node->_current_term, *iter, _version);
             timespec due_time = butil::milliseconds_from_now(
                 _node->_options.get_catchup_timeout_ms());
+
+            // 调用_node->_replicator_group.wait_caughtup，等到新节点的日志追赶成功就调用回调进入下一个stage
+            // 如果超时了还没有赶上，并且节点还存活着就重试
+            // 是否追赶上的判断标志是新加入节点和leader之间的log index的差距小于catchup_margin, catchup_margin由NodeOption中的catchup_margin变量指定，默认是1000
             if (_node->_replicator_group.wait_caughtup(
                     *iter, _node->_options.catchup_margin, &due_time, caught_up) != 0)
             {
@@ -3756,14 +3783,18 @@ namespace braft
             // implementation.
         case STAGE_JOINT:
             _stage = STAGE_STABLE;
+            //  当前处于稳定状态, 将旧配置设置为null, 新来的entry生成投票箱的时候只会在新配置下生成
+            //  包含新配置的entry被提交后进入下一个阶段， 即 STAGE_STABLE 阶段
             return _node->unsafe_apply_configuration(
                 Configuration(_new_peers), NULL, false);
         case STAGE_STABLE:
         {
+            // 判断当前节点是否在新配置
             bool should_step_down =
                 _new_peers.find(_node->_server_id) == _new_peers.end();
             butil::Status st = butil::Status::OK();
             reset(&st);
+            // 如果不在新配置中需要进行step_down
             if (should_step_down)
             {
                 _node->step_down(_node->_current_term, true,
