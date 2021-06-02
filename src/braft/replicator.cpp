@@ -361,6 +361,7 @@ namespace braft
         return;
     }
 
+    //  收到RPC请求的响应的回调
     void Replicator::_on_rpc_returned(ReplicatorId id, brpc::Controller *cntl,
                                       AppendEntriesRequest *request,
                                       AppendEntriesResponse *response,
@@ -695,7 +696,6 @@ namespace braft
             CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
             return;
         }
-
         std::unique_ptr<brpc::Controller> cntl(new brpc::Controller);
         std::unique_ptr<AppendEntriesRequest> request(new AppendEntriesRequest);
         std::unique_ptr<AppendEntriesResponse> response(new AppendEntriesResponse);
@@ -757,6 +757,8 @@ namespace braft
         _st.st = APPENDING_ENTRIES;
         _st.first_log_index = _min_flying_index();
         _st.last_log_index = _next_index - 1;
+
+        //  注意回调函数  _on_rpc_returned
         google::protobuf::Closure *done = brpc::NewCallback(
             _on_rpc_returned, _id.value, cntl.get(),
             request.get(), response.get(), butil::monotonic_time_ms());

@@ -450,6 +450,7 @@ namespace braft
                     {
                         // Truncate all the conflicting entries to make local logs
                         // consensus with the leader.
+                        // 将冲突位置之后的entry截断
                         unsafe_truncate_suffix(
                             (*entries)[conflicting_index]->id.index - 1);
                     }

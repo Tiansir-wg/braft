@@ -1313,7 +1313,7 @@ namespace braft
         }
         if (!_conf.contains(peer_id))
         {
-            LOG(WARNING) << "node " << _grvoteoup_id << ":" << _server_id
+            LOG(WARNING) << "node " << _group_id << ":" << _server_id
                          << " refused to transfer leadership to peer " << peer_id
                          << " which doesn't belong to " << _conf.conf;
             return EINVAL;
@@ -3288,6 +3288,7 @@ namespace braft
         rpc->response = response;
         rpc->done = done;
         rpc->receive_time_ms = butil::gettimeofday_ms();
+        // 将收到的RPC请求缓存起来
         bool rc = _append_entries_cache->store(rpc);
         if (!rc && _append_entries_cache->empty())
         {
@@ -3405,6 +3406,7 @@ namespace braft
         if (!_rpc_map.empty())
         {
             bool need_clear = false;
+            // 第一个index大于等于 rpc->request->prev_log_index()  的位置
             std::map<int64_t, AppendEntriesRpc *>::iterator it =
                 _rpc_map.lower_bound(rpc->request->prev_log_index());
             int64_t rpc_prev_index = rpc->request->prev_log_index();
@@ -3413,6 +3415,7 @@ namespace braft
             // Some rpcs with the overlap log index alredy exist, means retransmission
             // happend, simplely clean all out of order requests, and store the new
             // one.
+            // 该位置不在开头，说明该位置之前有重叠
             if (it != _rpc_map.begin())
             {
                 --it;
@@ -3442,6 +3445,7 @@ namespace braft
         _rpc_map.insert(std::make_pair(rpc->request->prev_log_index(), rpc));
 
         // The first rpc need to start the timer
+        // 第一个rpc到来时启动计时器, 这个是为了防止请求等待时间过长
         if (_rpc_map.size() == 1)
         {
             if (!start_timer())
@@ -3534,6 +3538,7 @@ namespace braft
         _node->AddRef();
         bthread_t tid;
         // Sequence if not important
+        // 创建cache处理线程处理缓存中的每一个rpc请求
         if (bthread_start_background(
                 &tid, NULL, NodeImpl::handle_append_entries_from_cache,
                 arg) != 0)
