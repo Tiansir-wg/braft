@@ -49,6 +49,7 @@ namespace braft
         CHECK(_after_shutdown == NULL);
     }
 
+    // 复制状态机，发生事件时的操作
     int FSMCaller::run(void *meta, bthread::TaskIterator<ApplyTask> &iter)
     {
         FSMCaller *caller = (FSMCaller *)meta;

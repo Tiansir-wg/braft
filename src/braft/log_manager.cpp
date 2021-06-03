@@ -401,6 +401,7 @@ namespace braft
         // follower走这里
         else
         {
+            // 这里有个假设，即entry数组的index是连续的，在哪里保证这个数组连续???
             // Node is currently a follower and |entries| are from the leader. We
             // should check and resolve the confliction between the local logs and
             // |entries|

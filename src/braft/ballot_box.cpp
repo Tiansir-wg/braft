@@ -77,7 +77,8 @@ namespace braft
             Ballot &bl = _pending_meta_queue[log_index - _pending_index];
             // 调用 grant 将 quoroum 减1， 表示投了一票
             pos_hint = bl.grant(peer, pos_hint);
-            // quoroum初始值为一般节点数加1， quoroum == 0表示获得了过半数的投票就可以commit了
+            // quoroum和_old_quorum初始值为新旧配置下的半数节点数加1
+            // 只要quoroum == 0或者_old_quorum == 0之一满足表示获得了过半数的投票，就可以commit了
             if (bl.granted())
             {
                 last_committed_index = log_index;
@@ -96,6 +97,8 @@ namespace braft
         // removal request, we think it's safe to commit all the uncommitted
         // previous logs, which is not well proved right now
         // TODO: add vlog when committing previous logs
+
+        // 已经commit过的就可以从票箱中删除了
         for (int64_t index = _pending_index; index <= last_committed_index; ++index)
         {
             _pending_meta_queue.pop_front();
@@ -105,7 +108,7 @@ namespace braft
         _last_committed_index.store(last_committed_index, butil::memory_order_relaxed);
         lck.unlock();
         // The order doesn't matter
-        // 调用 FsmCaller 的 on_committed 方法执行状态机的操作
+        // 调用 FsmCaller 的 on_committed 方法执行状态机的操作, 即apply
         _waiter->on_committed(last_committed_index);
         return 0;
     }
@@ -122,6 +125,7 @@ namespace braft
         return 0;
     }
 
+    // 重新指定下一个处理的位置
     int BallotBox::reset_pending_index(int64_t new_pending_index)
     {
         BAIDU_SCOPED_LOCK(_mutex);
@@ -135,6 +139,7 @@ namespace braft
         return 0;
     }
 
+    // 添加一个待投票的任务
     int BallotBox::append_pending_task(const Configuration &conf, const Configuration *old_conf,
                                        Closure *closure)
     {
@@ -153,6 +158,7 @@ namespace braft
         return 0;
     }
 
+    // 设置commit日志的位置，只能向后
     int BallotBox::set_last_committed_index(int64_t last_committed_index)
     {
         // FIXME: it seems that lock is not necessary here
@@ -164,6 +170,7 @@ namespace braft
                 << ", parameter last_committed_index=" << last_committed_index;
             return -1;
         }
+        // last_committed_index指定的commit位置不能比当前记录的commit位置小
         if (last_committed_index <
             _last_committed_index.load(butil::memory_order_relaxed))
         {
@@ -199,6 +206,7 @@ namespace braft
         }
     }
 
+    //获取投票箱的状态
     void BallotBox::get_status(BallotBoxStatus *status)
     {
         if (!status)

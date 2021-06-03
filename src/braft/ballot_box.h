@@ -101,8 +101,8 @@ namespace braft
         FSMCaller *_waiter;
         ClosureQueue *_closure_queue;
         raft_mutex_t _mutex;
-        butil::atomic<int64_t> _last_committed_index;
-        int64_t _pending_index; // 表示 _pending_meta_queue 中待处理的第一个位置
+        butil::atomic<int64_t> _last_committed_index; // 最后commit的位置，commit表示至少获得了过半数节点的投票
+        int64_t _pending_index;                       // 表示 _pending_meta_queue 中下一个待处理的位置
         std::deque<Ballot> _pending_meta_queue;
     };
 

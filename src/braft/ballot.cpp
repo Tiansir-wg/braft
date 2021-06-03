@@ -59,6 +59,7 @@ namespace braft
     {
         std::vector<UnfoundPeerId>::iterator iter;
         iter = find_peer(peer, _peers, hint.pos0);
+        // 找到了peer, 将_quorum减一
         if (iter != _peers.end())
         {
             if (!iter->found)
@@ -73,16 +74,19 @@ namespace braft
             hint.pos0 = -1;
         }
 
+        // _old_peers为空表示当前只工作在一种配置下
         if (_old_peers.empty())
         {
             hint.pos1 = -1;
             return hint;
         }
 
+        // 在旧配置下寻找peer
         iter = find_peer(peer, _old_peers, hint.pos1);
 
         if (iter != _old_peers.end())
         {
+            // 找到了peer，将_old_quorum减一
             if (!iter->found)
             {
                 iter->found = true;
