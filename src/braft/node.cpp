@@ -1659,6 +1659,7 @@ namespace braft
         }
 
         // check state
+        // pre_vote请求是在follower状态下发起的
         if (_state != STATE_FOLLOWER)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1667,6 +1668,8 @@ namespace braft
             return;
         }
         // check stale response
+        // term是follower发起pre_vote时的term，current是当前的term
+        // 不相等说明在发起pre_vote之后有其他节点成为leader更新了当前follower的term
         if (term != _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1675,7 +1678,7 @@ namespace braft
             return;
         }
         // check response term
-        // 检查response中的term，如果大于自身的term，则通过 step_down 退位成 follower 状态，并设置 term 值。
+        // 检查response中的term，如果大于自身的term，则执行 step_down 并更新 term 值。
         if (response.term() > _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1787,7 +1790,8 @@ namespace braft
     // 由于网络分区的存在，每次 RequestVote RPC 都会超时，结果是，一直不断地发起新的选举，term 会不断增大。
     // 在网络分区恢复，重新加入集群后，其 term 值会被其他节点知晓，导致其他节点更新自己的 term，并变为 follower。
     // 然后触发重新选举，但被隔离的节点日志不是最新，并不会竞选成功，整个集群的状态被该节点扰乱。
-    // 在节点发起一次选举时，会先发起一次 prevote 请求，判断是否能够赢得选举，赢得选举的条件与正常选举相同。如果可以，则增加 term 值，并发起正常的选举。
+    // 在follower节点将要发起一次选举时，会先发起一次 prevote 请求，判断是否能够赢得选举，赢得选举的条件与正常选举相同。
+    // 如果可以，则转换为 candidate 状态，增加 term 值，并发起正常的选举。否则不会就不会转换为candidate状态，也不会增加term
     void NodeImpl::pre_vote(std::unique_lock<raft_mutex_t> *lck, bool triggered)
     {
         LOG(INFO) << "node " << _group_id << ":" << _server_id
@@ -3455,15 +3459,18 @@ namespace braft
             // 第一个index大于等于 rpc->request->prev_log_index()  的位置
             std::map<int64_t, AppendEntriesRpc *>::iterator it =
                 _rpc_map.lower_bound(rpc->request->prev_log_index());
+            // 当前rpc请求的第一个entry的index和最后一个entry的index
             int64_t rpc_prev_index = rpc->request->prev_log_index();
             int64_t rpc_last_index = rpc_prev_index + rpc->request->entries_size();
 
             // Some rpcs with the overlap log index alredy exist, means retransmission
             // happend, simplely clean all out of order requests, and store the new
             // one.
-            // 该位置不在开头，说明该位置之前有重叠
             if (it != _rpc_map.begin())
             {
+                // 该位置的前一个rpc请求的last_index落到了当前rpc请求的prev_log_index之后
+                // 说明当前rpc请求中有一部分entry是重发的，因此需要清理
+                // 比如前一个rpc请求包括index[3,4,5]，当前rpc请求的index[4,5,6]
                 --it;
                 AppendEntriesRpc *prev_rpc = it->second;
                 if (prev_rpc->request->prev_log_index() +
@@ -3476,17 +3483,20 @@ namespace braft
             }
             if (!need_clear && it != _rpc_map.end())
             {
+                // 比如前一个rpc请求包括index[3,4,5]，当前rpc请求的index[3,4]
                 AppendEntriesRpc *next_rpc = it->second;
                 if (next_rpc->request->prev_log_index() < rpc_last_index)
                 {
                     need_clear = true;
                 }
             }
+            // 有重复的entry，需要执行清理操作
             if (need_clear)
             {
                 clear();
             }
         }
+        // 把当前rpc请求放进缓存
         _rpc_queue.Append(rpc);
         _rpc_map.insert(std::make_pair(rpc->request->prev_log_index(), rpc));
 
@@ -3562,6 +3572,7 @@ namespace braft
         stop_timer();
         HandleAppendEntriesFromCacheArg *arg = new HandleAppendEntriesFromCacheArg;
         arg->node = _node;
+        // 清空现有缓存
         while (!_rpc_queue.empty())
         {
             AppendEntriesRpc *rpc = _rpc_queue.head()->value();

@@ -120,6 +120,7 @@ namespace braft
         return bthread::execution_queue_join(_disk_queue);
     }
 
+    // 清除 _logs_in_memory 数组中id小于等于指定id的log entry
     void LogManager::clear_memory_logs(const LogId &id)
     {
         LogEntry *entries_to_clear[256];
@@ -458,14 +459,15 @@ namespace braft
                     {
                         // Truncate all the conflicting entries to make local logs
                         // consensus with the leader.
-                        // 将冲突位置之后的entry截断
+                        // 将 _logs_in_memory 冲突位置之后的entry截断
                         unsafe_truncate_suffix(
                             (*entries)[conflicting_index]->id.index - 1);
                     }
-                    // 修改连续的最后entry的index
+                    // 修改连续的entry的最大index
                     _last_log_index = entries->back()->id.index;
-                } // else this is a duplicated AppendEntriesRequest, we have
-                  // nothing to do besides releasing all the entries
+                }
+                // else this is a duplicated AppendEntriesRequest, we have
+                // nothing to do besides releasing all the entries
 
                 // Release all the entries before the conflicting_index and the rest
                 // would be append to _logs_in_memory and _log_storage after this
@@ -503,8 +505,10 @@ namespace braft
         }
         std::unique_lock<raft_mutex_t> lck(_mutex);
         // leader: 为entry分配index
-        // follower: 解决冲突
-        // 如果有冲突，则释放所有entries并返回
+        // follower: 截断 _logs_in_memory,  解决冲突
+        // 只有两种情况会返回非0:
+        // 1. entrys与之前commit的entry不连续
+        // 2. entrys全部都已经apply过了
         if (!entries->empty() && check_and_resolve_conflict(entries, done) != 0)
         {
             lck.unlock();
