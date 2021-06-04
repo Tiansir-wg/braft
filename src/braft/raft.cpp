@@ -329,6 +329,8 @@ namespace braft
                    << " didn't implement on_snapshot_save";
         done->status().set_error(-1, "%s didn't implement on_snapshot_save",
                                  butil::class_name_str(*this).c_str());
+
+        // 调用 SaveSnapshotDone::Run()
         done->Run();
     }
 

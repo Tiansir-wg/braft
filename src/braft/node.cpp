@@ -499,7 +499,7 @@ namespace braft
         CHECK_EQ(0, _election_timer.init(this, options.election_timeout_ms));
         // 如果conf不为空，会调用step_down将自己的_state初始化为follower并启动
         CHECK_EQ(0, _stepdown_timer.init(this, options.election_timeout_ms));
-        // 保存快照相关的计时器，超时后会执行快照
+        // 快照相关的计时器，超时后会执行快照
         CHECK_EQ(0, _snapshot_timer.init(this, options.snapshot_interval_s * 1000));
 
         _config_manager = new ConfigurationManager();
@@ -634,6 +634,7 @@ namespace braft
         {
             BRAFT_VLOG << "node " << _group_id << ":" << _server_id
                        << " term " << _current_term << " start snapshot_timer";
+            // _snapshot_timer 启动后，每隔一段时间会执行一次 run 方法, 在run方法中执行  handle_snapshot_timeout
             _snapshot_timer.start();
         }
 
@@ -1020,6 +1021,7 @@ namespace braft
         {
             _snapshot_executor->do_snapshot(done);
         }
+        // 打快照只能另起线程执行
         else
         {
             if (done)

@@ -767,6 +767,7 @@ namespace braft
         {
             old_conf.add_peer(meta->old_peers(i));
         }
+        // 更新快照的元数据
         ConfigurationEntry entry;
         entry.id = LogId(meta->last_included_index(), meta->last_included_term());
         entry.conf = conf;
@@ -775,6 +776,7 @@ namespace braft
         int64_t term = unsafe_get_term(meta->last_included_index());
 
         const LogId last_but_one_snapshot_id = _last_snapshot_id;
+        // 更新 _last_snapshot_id
         _last_snapshot_id.index = meta->last_included_index();
         _last_snapshot_id.term = meta->last_included_term();
         if (_last_snapshot_id > _applied_id)
@@ -786,6 +788,7 @@ namespace braft
         // these logs in memory all the time until they are flushed to disk. By this
         // way we can avoid some corner cases which failed to get logs.
 
+        // last_included_index大于last_index
         if (term == 0)
         {
             // last_included_index is larger than last_index
@@ -794,6 +797,7 @@ namespace braft
             truncate_prefix(meta->last_included_index() + 1, lck);
             return;
         }
+        // 如果term等于 meta->last_included_term，说明log entry里面还存在着这条记录，先不着急截断，把它截断到上一个快照处
         else if (term == meta->last_included_term())
         {
             // Truncating log to the index of the last snapshot.
@@ -808,6 +812,8 @@ namespace braft
             }
             return;
         }
+        // 其他情况对应index上的term不等于meta->last_included_term，则可能是follower处正在安装快照。
+        // 直接reset
         else
         {
             // TODO: check the result of reset.

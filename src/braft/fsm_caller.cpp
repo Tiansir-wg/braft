@@ -368,6 +368,7 @@ namespace braft
         int64_t last_applied_index = _last_applied_index.load(butil::memory_order_relaxed);
 
         SnapshotMeta meta;
+        // 设置meta
         meta.set_last_included_index(last_applied_index);
         meta.set_last_included_term(_last_applied_term);
         ConfigurationEntry conf_entry;
@@ -385,6 +386,7 @@ namespace braft
             *meta.add_old_peers() = iter->to_string();
         }
 
+        // ??? writer 从哪里来的 ???
         SnapshotWriter *writer = done->start(meta);
         if (!writer)
         {
@@ -393,6 +395,7 @@ namespace braft
             return;
         }
 
+        // 在on_snapshot_save里面利用自定义的writer去写snapshot文件
         _fsm->on_snapshot_save(writer, done);
         return;
     }

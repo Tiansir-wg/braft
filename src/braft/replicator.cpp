@@ -887,7 +887,7 @@ namespace braft
             CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
             return;
         }
-        // 检查当前任务是否超过上限，如果是leader则没有限制
+        // 当前snapshot任务已经达到上限，如果是leader则没有限制
         if (_options.snapshot_throttle && !_options.snapshot_throttle->add_one_more_task(true))
         {
             return _block(butil::gettimeofday_us(), EBUSY);
@@ -895,8 +895,10 @@ namespace braft
 
         // pre-set replicator state to INSTALLING_SNAPSHOT, so replicator could be
         // blocked if something is wrong, such as throttled for a period of time
+
         // 将状态设置为INSTALLING_SNAPSHOT
         _st.st = INSTALLING_SNAPSHOT;
+
         // 调用LocalSnapshotStorage::open得到一个reader，指向最新的快照文件，并且会把snapshot meta从文件加载到_meta_table里面
         _reader = _options.snapshot_storage->open();
         if (!_reader)
@@ -915,8 +917,8 @@ namespace braft
             node_impl->Release();
             return;
         }
-        // 调用LocalSnapshotReader::generate_uri_for_copy，该函数会通过调用file_service_add把reader添加到file_service里面，
-        // 然后返回一个uri。follower通过uri去下载快照文件。uri的格式为："remote://" + _addr + "/" + _reader_id
+        // 函数会通过调用file_service_add把reader添加到file_service里面，然后返回一个uri, follower通过uri去下载快照文件。
+        // uri的格式为："remote://" + _addr + "/" + _reader_id
         std::string uri = _reader->generate_uri_for_copy();
         // NOTICE: If uri is something wrong, retry later instead of reporting error
         // immediately(making raft Node error), as FileSystemAdaptor layer of _reader is
@@ -955,6 +957,7 @@ namespace braft
         request->set_group_id(_options.group_id);
         request->set_server_id(_options.server_id.to_string());
         request->set_peer_id(_options.peer_id.to_string());
+        // 这里会将meta数据和snapshot的URI都发送给follower
         request->mutable_meta()->CopyFrom(meta);
         request->set_uri(uri);
 

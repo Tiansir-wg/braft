@@ -169,7 +169,8 @@ namespace braft
             }
             return;
         }
-
+        // _snapshot_storage负责快照文件的读取，默认是LocalSnapshotStorage，从本地文件读取
+        // 创建一个临时的路径并用该路径初始化 SnapshotWriter
         SnapshotWriter *writer = _snapshot_storage->create();
         if (!writer)
         {
@@ -184,6 +185,7 @@ namespace braft
         }
         _saving_snapshot = true;
         SaveSnapshotDone *snapshot_save_done = new SaveSnapshotDone(this, writer, done);
+        // 用 snapshot_save_done 构造 SNAPSHOT_SAVE 任务并放到队列中去执行
         if (_fsm_caller->on_snapshot_save(snapshot_save_done) != 0)
         {
             lck.unlock();
@@ -234,6 +236,7 @@ namespace braft
             }
         }
 
+        // 调用LocalSnapshotStorage::close，该函数会把temp文件夹重命名成snapshot+last_included_index这种格式的新文件，这样快照文件就成功保存下来了
         if (_snapshot_storage->close(writer) != 0)
         {
             ret = EIO;
@@ -254,6 +257,7 @@ namespace braft
             ss << "snapshot_save_done, last_included_index=" << meta.last_included_index()
                << " last_included_term=" << meta.last_included_term();
             LOG(INFO) << ss.str();
+            // 调用LogManager::set_snapshot，在该函数里首先调用ConfigManager::set_snapshot更新快照元数据，然后得到快照最后包含的index对应的term
             _log_manager->set_snapshot(&meta);
             lck.lock();
         }
@@ -346,6 +350,7 @@ namespace braft
         SaveSnapshotDone *self = (SaveSnapshotDone *)arg;
         std::unique_ptr<SaveSnapshotDone> self_guard(self);
         // Must call on_snapshot_save_done to clear _saving_snapshot
+        // 调用SnapshotExecutor::on_snapshot_save_done
         int ret = self->_se->on_snapshot_save_done(
             self->status(), self->_meta, self->_writer);
         if (ret != 0 && self->status().ok())
@@ -364,6 +369,7 @@ namespace braft
         return NULL;
     }
 
+    // 开启新线程运行 continue_run
     void SaveSnapshotDone::Run()
     {
         // Avoid blocking FSMCaller

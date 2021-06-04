@@ -793,15 +793,18 @@ namespace braft
     SnapshotReader *LocalSnapshotStorage::open()
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
+        // _last_snapshot_index == 0表示之前存在快照
         if (_last_snapshot_index != 0)
         {
             const int64_t last_snapshot_index = _last_snapshot_index;
             ++_ref_map[last_snapshot_index];
             lck.unlock();
             std::string snapshot_path(_path);
+            // 快照文件路径
             butil::string_appendf(&snapshot_path, "/" BRAFT_SNAPSHOT_PATTERN, last_snapshot_index);
             LocalSnapshotReader *reader = new LocalSnapshotReader(snapshot_path, _addr,
                                                                   _fs.get(), _snapshot_throttle.get());
+            // Reader初始化，在这里将meta加载到 _meta_table
             if (reader->init() != 0)
             {
                 CHECK(!lck.owns_lock());
@@ -811,6 +814,7 @@ namespace braft
             }
             return reader;
         }
+        // 尚未存在快照
         else
         {
             errno = ENODATA;
