@@ -65,6 +65,7 @@ namespace braft
         // IP和端口
         butil::StringPiece ip_and_port = uri_str.substr(0, slash_pos);
         uri_str.remove_prefix(slash_pos + 1);
+        // 提取 _reader_id
         if (!butil::StringToInt64(uri_str, &_reader_id))
         {
             LOG(ERROR) << "Invalid reader_id_format=" << uri_str
@@ -190,6 +191,7 @@ namespace braft
         {
             session->_options = *options;
         }
+        // ###
         session->send_next_rpc();
         return session;
     }
@@ -255,6 +257,7 @@ namespace braft
         }
         _request.set_count(new_max_count);
         _rpc_call = _cntl.call_id();
+        // 向leader的FileService发送get_file请求
         FileService_Stub stub(_channel);
         AddRef(); // Release in on_rpc_returned
         return stub.get_file(&_cntl, &_request, &_response, &_done);

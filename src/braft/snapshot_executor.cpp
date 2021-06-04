@@ -271,6 +271,7 @@ namespace braft
         return ret;
     }
 
+    // 快照加载完之后的回调
     void SnapshotExecutor::on_snapshot_load_done(const butil::Status &st)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
@@ -465,18 +466,21 @@ namespace braft
         SnapshotMeta meta = request->meta();
 
         // check if install_snapshot tasks num exceeds threshold
+        // 检查安装快照任务是否达到了安装快照任务的最大阈值
         if (_snapshot_throttle && !_snapshot_throttle->add_one_more_task(false))
         {
             LOG(WARNING) << "Fail to install snapshot";
             cntl->SetFailed(EBUSY, "Fail to add install_snapshot tasks now");
             return;
         }
-
+        // 构造DownloadingSnapshot
         std::unique_ptr<DownloadingSnapshot> ds(new DownloadingSnapshot);
         ds->cntl = cntl;
         ds->done = done;
         ds->response = response;
         ds->request = request;
+
+        // 这一步的最终目的是下载快照，中间会有很多步骤
         ret = register_downloading_snapshot(ds.get());
         //    ^^^ DON'T access request, response, done and cntl after this point
         //        as the retry snapshot will replace this one.
@@ -511,6 +515,7 @@ namespace braft
         {
             _snapshot_throttle->finish_one_task(false);
         }
+        // 加载快照文件
         return load_downloading_snapshot(ds.release(), meta);
     }
 
@@ -569,6 +574,10 @@ namespace braft
         lck.unlock();
         InstallSnapshotDone *install_snapshot_done =
             new InstallSnapshotDone(this, reader);
+
+        // 调用fsm caller的 on_snapshot_load 将加载snapshot的任务放到队列里面
+        // 该函数会调用 FSMCaller::do_snapshot_load 方法
+        // 同时注册回调 InstallSnapshotDone，队列的任务结束后执行 InstallSnapshotDone::Run()
         int ret = _fsm_caller->on_snapshot_load(install_snapshot_done);
         if (ret != 0)
         {
@@ -587,6 +596,7 @@ namespace braft
             ds->cntl->SetFailed(EHOSTDOWN, "Node is stopped");
             return -1;
         }
+        // ???
         if (ds->request->term() != _term)
         {
             LOG(WARNING) << "Register failed: term unmatch.";
@@ -594,6 +604,8 @@ namespace braft
             ds->response->set_term(_term);
             return -1;
         }
+
+        // ???
         if (ds->request->meta().last_included_index() <= _last_snapshot_index)
         {
             LOG(WARNING) << "Register failed: snapshot is not newer.";
@@ -601,7 +613,9 @@ namespace braft
             ds->response->set_success(true);
             return -1;
         }
+        // 返回接受快照的节点的term
         ds->response->set_term(_term);
+        // 节点正在保存快照
         if (_saving_snapshot)
         {
             LOG(WARNING) << "Register failed: is saving snapshot.";

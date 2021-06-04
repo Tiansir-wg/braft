@@ -571,6 +571,8 @@ namespace braft
         return;
     }
 
+    // 填充 AppendEntriesRequest 字段, 返回0表示正常情况， 返回-1表示当前entry已经不在了，需要发送快照
+    // ???为什么不在, 判断依据是什么???
     int Replicator::_fill_common_fields(AppendEntriesRequest *request,
                                         int64_t prev_log_index,
                                         bool is_heartbeat)

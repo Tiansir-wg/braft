@@ -450,6 +450,7 @@ namespace braft
             return done->Run();
         }
 
+        // 调用用户自定义的状态机的 on_snapshot_load 方法恢复状态机
         ret = _fsm->on_snapshot_load(reader);
         if (ret != 0)
         {
@@ -473,6 +474,7 @@ namespace braft
             _fsm->on_configuration_committed(conf, meta.last_included_index());
         }
 
+        // 更新 _last_applied_index 和 _last_applied_term
         _last_applied_index.store(meta.last_included_index(),
                                   butil::memory_order_release);
         _last_applied_term = meta.last_included_term();

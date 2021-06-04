@@ -680,12 +680,13 @@ namespace braft
 
     SnapshotCopier *LocalSnapshotStorage::start_to_copy_from(const std::string &uri)
     {
+        // 构造和初始化 LocalSnapshotCopier
         LocalSnapshotCopier *copier = new LocalSnapshotCopier();
         copier->_storage = this;
         copier->_filter_before_copy_remote = _filter_before_copy_remote;
         copier->_fs = _fs.get();
         copier->_throttle = _snapshot_throttle.get();
-        // 在init函数中解析IP和端口
+        // 在init函数中实际调用了 RemoteFileCopier 的init方法
         if (copier->init(uri) != 0)
         {
             LOG(ERROR) << "Fail to init copier from " << uri
@@ -693,7 +694,7 @@ namespace braft
             delete copier;
             return NULL;
         }
-        // 在后台开启线程执行LocalSnapshotCopier::copy：
+        // 开启线程执行LocalSnapshotCopier::copy：
         copier->start();
         return copier;
     }
@@ -896,6 +897,9 @@ namespace braft
         do
         {
             // 加载快照的metafile
+            // 这一步其实分两步:
+            // 1. 从leader下载meta到本地缓存
+            // 2. 将缓存的meta加载到 _meta_table
             load_meta_table();
             if (!ok())
             {
@@ -949,6 +953,7 @@ namespace braft
             set_error(ECANCELED, "%s", berror(ECANCELED));
             return;
         }
+        // ### 从leader读取meta数据到meta_buf
         scoped_refptr<RemoteFileCopier::Session> session = _copier.start_to_copy_to_iobuf(BRAFT_SNAPSHOT_META_FILE,
                                                                                           &meta_buf, NULL);
         _cur_session = session.get();
@@ -963,6 +968,8 @@ namespace braft
             set_error(session->status().error_code(), session->status().error_cstr());
             return;
         }
+
+        //将 meta_buf 加载到 _meta_table 中
         if (_remote_snapshot._meta_table.load_from_iobuf_as_remote(meta_buf) != 0)
         {
             LOG(WARNING) << "Bad meta_table format";
@@ -979,6 +986,7 @@ namespace braft
         writer->list_files(&existing_files);
         std::vector<std::string> to_remove;
 
+        // 对leader的meta信息，从其中查找每一个文件在本地是否存在,如果存在则从 _meta_table 将该meta对应的文件删除
         for (size_t i = 0; i < existing_files.size(); ++i)
         {
             if (_remote_snapshot.get_file_meta(existing_files[i], NULL) != 0)
@@ -989,6 +997,7 @@ namespace braft
         }
 
         std::vector<std::string> remote_files;
+        //  根据meta获取leader所有的文件列表
         _remote_snapshot.list_files(&remote_files);
         for (size_t i = 0; i < remote_files.size(); ++i)
         {
@@ -1106,6 +1115,7 @@ namespace braft
             }
         }
         _writer->save_meta(_remote_snapshot._meta_table.meta());
+        //  将 _meta_table 持久化到本地
         if (_writer->sync() != 0)
         {
             set_error(EIO, "Fail to sync snapshot writer");
@@ -1191,6 +1201,7 @@ namespace braft
                 &_tid, NULL, start_copy, this) != 0)
         {
             PLOG(ERROR) << "Fail to start bthread";
+            // 这里就是实际上进行下载快照的函数了
             copy();
         }
     }

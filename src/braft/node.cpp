@@ -2967,6 +2967,7 @@ namespace braft
     {
         brpc::ClosureGuard done_guard(done);
 
+        // snapshot需要在新的线程中进行
         if (_snapshot_executor == NULL)
         {
             cntl->SetFailed(EINVAL, "Not support snapshot");
