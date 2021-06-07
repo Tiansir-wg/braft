@@ -78,7 +78,8 @@ namespace braft
             // 调用 grant 将 quoroum 减1， 表示投了一票
             pos_hint = bl.grant(peer, pos_hint);
             // quoroum和_old_quorum初始值为新旧配置下的半数节点数加1
-            // 只要quoroum == 0或者_old_quorum == 0之一满足表示获得了过半数的投票，就可以commit了
+            // 只要quoroum == 0或者_old_quorum == 0之一满足表示获得了过半数的投票，表示commit了
+
             if (bl.granted())
             {
                 last_committed_index = log_index;
@@ -104,11 +105,14 @@ namespace braft
             _pending_meta_queue.pop_front();
         }
 
+        // 更新下一个待处理的投票
         _pending_index = last_committed_index + 1;
+        // 更新已经commit的投票的位置
         _last_committed_index.store(last_committed_index, butil::memory_order_relaxed);
         lck.unlock();
         // The order doesn't matter
         // 调用 FsmCaller 的 on_committed 方法执行状态机的操作, 即apply
+        // 构造一个任务提交到execution_queue里面，最后调用FSMCaller::do_committed去调用用户传入的自定义的StateMachine::on_apply函数执行状态机的操作
         _waiter->on_committed(last_committed_index);
         return 0;
     }

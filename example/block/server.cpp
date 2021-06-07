@@ -99,12 +99,14 @@ namespace example
             // initial_conf只有在这个复制组从空节点启动才会生效，当snapshot和log里的数据不为空的时候会从其中恢复Configuration。
             // initial_conf只用于创建复制组，第一个节点将自己设置进initial_conf，再调用add_peer添加其他节点，其他节点initial_conf设置为空
             // 也可以多个节点同时设置相同的inital_conf(多个节点的ip:port)来同时启动空节点。
+            // 解析参数，添加peer
             if (node_options.initial_conf.parse_from(FLAGS_conf) != 0)
             {
                 LOG(ERROR) << "Fail to parse configuration `" << FLAGS_conf << '\'';
                 return -1;
             }
             node_options.election_timeout_ms = FLAGS_election_timeout_ms;
+            // 这里就将业务状态机和raft关联起来了
             node_options.fsm = this;
             node_options.node_owns_fsm = false;
             node_options.snapshot_interval_s = FLAGS_snapshot_interval;

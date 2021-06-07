@@ -553,6 +553,7 @@ namespace braft
     {
         if (!_has_error.load(butil::memory_order_relaxed))
         {
+            // 实际要写入的日志大小, 也就是to_append中所有LogEntry的数据部分之和
             size_t written_size = 0;
             for (size_t i = 0; i < to_append->size(); ++i)
             {
@@ -561,6 +562,7 @@ namespace braft
             butil::Timer timer;
             timer.start();
             g_storage_append_entries_concurrency << 1;
+            // 真正完成持久化的操作
             int nappent = _log_storage->append_entries(*to_append, metric);
             g_storage_append_entries_concurrency << -1;
             timer.stop();
@@ -572,6 +574,7 @@ namespace braft
                            << ", to_append=" << to_append->size();
                 report_error(EIO, "Fail to append entries");
             }
+            // 记录最后一个持久化的log entry的id
             if (nappent > 0)
             {
                 *last_id = (*to_append)[nappent - 1]->id;
@@ -608,6 +611,7 @@ namespace braft
             if (_size > 0)
             {
                 IOMetric metric;
+                // 持久化日志
                 _lm->append_to_storage(&_to_append, _last_id, &metric);
                 g_storage_flush_batch_counter << _size;
                 for (size_t i = 0; i < _size; ++i)
@@ -623,6 +627,7 @@ namespace braft
                 }
                 _to_append.clear();
             }
+            // 还原位置变量
             _size = 0;
             _buffer_size = 0;
         }

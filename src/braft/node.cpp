@@ -493,18 +493,18 @@ namespace braft
         }
 
         // 四个定时器:
-        //
+        // 投票计时器，candidate在此期间没能竞选成功则发起下一轮的选举
         CHECK_EQ(0, _vote_timer.init(this, options.election_timeout_ms + options.max_clock_drift_ms));
-        // 选举超时的时候_election_timer会被触发，然后去调用NodeImpl::handle_election_timeout函数
+        // follower在此时间超时后没有收到leader的消息，就会去调用NodeImpl::handle_election_timeout函数
         CHECK_EQ(0, _election_timer.init(this, options.election_timeout_ms));
-        // 如果conf不为空，会调用step_down将自己的_state初始化为follower并启动
         CHECK_EQ(0, _stepdown_timer.init(this, options.election_timeout_ms));
         // 快照相关的计时器，超时后会执行快照
         CHECK_EQ(0, _snapshot_timer.init(this, options.snapshot_interval_s * 1000));
 
         _config_manager = new ConfigurationManager();
 
-        // 对队列中的task执行execute_applying_tasks操作
+        // 启动线程对_apply_queue_id对应的队列执行execute_applying_tasks函数
+        // 该队列与任务提交有关
         if (bthread::execution_queue_start(&_apply_queue_id, NULL,
                                            execute_applying_tasks, this) != 0)
         {
@@ -524,10 +524,12 @@ namespace braft
         // Create _fsm_caller first as log_manager needs it to report error
         _fsm_caller = new FSMCaller();
 
+        // 初始化租约，用于解决脑裂问题
         _leader_lease.init(options.election_timeout_ms);
         _follower_lease.init(options.election_timeout_ms, options.max_clock_drift_ms);
 
         // log storage and log manager init
+        // 初始化LogStorage, 与日志的持久化有关
         if (init_log_storage() != 0)
         {
             LOG(ERROR) << "node " << _group_id << ":" << _server_id
@@ -536,6 +538,7 @@ namespace braft
         }
 
         // meta init
+        // 初始化 RaftMetaStorage ,与raft自身元数据的持久化有关
         if (init_meta_storage() != 0)
         {
             LOG(ERROR) << "node " << _group_id << ":" << _server_id
@@ -543,6 +546,7 @@ namespace braft
             return -1;
         }
 
+        // 初始化FsmCaller, 其用于调用用户自定义的状态
         if (init_fsm_caller(LogId(0, 0)) != 0)
         {
             LOG(ERROR) << "node " << _group_id << ":" << _server_id
@@ -551,6 +555,7 @@ namespace braft
         }
 
         // commitment manager init
+        // 初始化票箱
         _ballot_box = new BallotBox();
         BallotBoxOptions ballot_box_options;
         ballot_box_options.waiter = _fsm_caller;
@@ -565,6 +570,7 @@ namespace braft
         // snapshot storage init and load
         // NOTE: snapshot maybe discard entries when snapshot saved but not discard entries.
         //      init log storage before snapshot storage, snapshot storage will update configration
+        // 初始化SnapshotStorage, 与快照的持久化有关
         if (init_snapshot_storage() != 0)
         {
             LOG(ERROR) << "node " << _group_id << ":" << _server_id
@@ -583,6 +589,7 @@ namespace braft
 
         _conf.id = LogId();
         // if have log using conf in log, else using conf in options
+        // 从这里可以看出，initial_conf只有在这个复制组从空节点启动才会生效，当有snapshot和log里的数据不为空的时候的时候从其中恢复Configuration。
         if (_log_manager->last_log_index() > 0)
         {
             _log_manager->check_and_set_configuration(&_conf);
@@ -599,6 +606,7 @@ namespace braft
                        << " init_meta_storage failed";
             return -1;
         }
+
         // first start, we can vote directly
         if (_current_term == 1 && _voted_id.is_empty())
         {

@@ -860,7 +860,7 @@ namespace braft
             {
                 return i;
             }
-            // 将entry添加到最后一个segment中
+            // 将entry内容写入到segment对应的文件中
             int ret = segment->append(entry);
             if (0 != ret)
             {
@@ -1385,6 +1385,8 @@ namespace braft
         scoped_refptr<Segment> prev_open_segment;
         {
             BAIDU_SCOPED_LOCK(_mutex);
+            // 不存在open_segment则创建一个
+            // 调用构造函数创建的segment并没有初始化文件描述符, 需要通过create 进行初始化
             if (!_open_segment)
             {
                 _open_segment = new Segment(_path, last_log_index() + 1, _checksum_type);
@@ -1394,6 +1396,8 @@ namespace braft
                     return NULL;
                 }
             }
+            //  open_segment大小超过设置的阈值时，将_open_segment加入到_segments映射，key是segment的第一个entry的index,value是对应的segment对象
+            // 以
             if (_open_segment->bytes() > FLAGS_raft_max_segment_size)
             {
                 _segments[_open_segment->first_index()] = _open_segment;

@@ -218,7 +218,7 @@ namespace braft
         butil::atomic<bool> _has_error;
         WaitId _next_wait_id;
 
-        LogId _disk_id;
+        LogId _disk_id; // 持久化的最后一个log entry的id,包括term和index
         LogId _applied_id;
         // TODO(chenzhangyi01): replace deque with a thread-safe data structure
         std::deque<LogEntry * /*FIXME*/> _logs_in_memory;
