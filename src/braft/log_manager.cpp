@@ -628,6 +628,9 @@ namespace braft
         }
         void append(LogManager::StableClosure *done)
         {
+            // 刷新缓存的条件:
+            // 1. 缓存的entry字节大小超过了指定的参数
+            // 2. 缓存的StableCloser对象超过了最大数_cap限制，_cap是创建AppendBatcher对象时传入的，默认是256
             if (_size == _cap ||
                 _buffer_size >= (size_t)FLAGS_raft_max_append_buffer_size)
             {
@@ -636,6 +639,7 @@ namespace braft
             _storage[_size++] = done;
             _to_append.insert(_to_append.end(),
                               done->_entries.begin(), done->_entries.end());
+            // 更新缓存大小
             for (size_t i = 0; i < done->_entries.size(); ++i)
             {
                 _buffer_size += done->_entries[i]->data.length();
@@ -667,7 +671,8 @@ namespace braft
         StableClosure *storage[256];
         // 分批次写入文件
         AppendBatcher ab(storage, ARRAY_SIZE(storage), &last_id, log_manager);
-
+        // iter应该是disk_queue的元素迭代器，每一个元素都是StableCloser对象，每个StableCloser对象内部有多个entry
+        // 对Leader来说，iter就是LeaderStableCloser对象
         for (; iter; ++iter)
         {
             // ^^^ Must iterate to the end to release to corresponding

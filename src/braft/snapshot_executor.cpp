@@ -271,7 +271,7 @@ namespace braft
         return ret;
     }
 
-    // 快照加载完之后的回调
+    //
     void SnapshotExecutor::on_snapshot_load_done(const butil::Status &st)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
