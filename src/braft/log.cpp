@@ -786,7 +786,7 @@ namespace braft
         bool is_empty = false;
         do
         {
-            // 加载元数据信息
+            // 加载元数据信息，主要是从元数据信息中获取 _first_log_index
             ret = load_meta();
             if (ret != 0 && errno == ENOENT)
             {
@@ -1355,7 +1355,6 @@ namespace braft
         return ret;
     }
 
-    // 主要是从元数据信息中获取 _first_log_index
     int SegmentLogStorage::load_meta()
     {
         butil::Timer timer;
@@ -1372,6 +1371,7 @@ namespace braft
             return -1;
         }
 
+        // ###
         _first_log_index.store(meta.first_log_index());
 
         timer.stop();

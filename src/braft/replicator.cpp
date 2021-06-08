@@ -1598,7 +1598,7 @@ namespace braft
     int ReplicatorGroup::add_replicator(const PeerId &peer)
     {
         CHECK_NE(0, _common_options.term);
-        // 已经存在不要重复添加
+        // 已经添加过
         if (_rmap.find(peer) != _rmap.end())
         {
             return 0;
@@ -1607,6 +1607,7 @@ namespace braft
         options.peer_id = peer;
         options.replicator_status = new ReplicatorStatus;
         ReplicatorId rid;
+        // 启动replicator
         if (Replicator::start(options, &rid) != 0)
         {
             LOG(ERROR) << "Group " << options.group_id
@@ -1614,6 +1615,7 @@ namespace braft
             delete options.replicator_status;
             return -1;
         }
+        // ReplicatorGroup内用map维护节点ID和ReplicatorStatus的关系
         _rmap[peer] = {rid, options.replicator_status};
         return 0;
     }

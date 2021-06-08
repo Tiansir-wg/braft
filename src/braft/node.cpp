@@ -252,6 +252,7 @@ namespace braft
     int NodeImpl::init_log_storage()
     {
         CHECK(_fsm_caller);
+        // 创建 _log_storage
         if (_options.log_storage)
         {
             _log_storage = _options.log_storage;
@@ -266,6 +267,7 @@ namespace braft
                        << " find log storage failed, uri " << _options.log_uri;
             return -1;
         }
+        // 初始化 _log_manager
         _log_manager = new LogManager();
         LogManagerOptions log_manager_options;
         log_manager_options.log_storage = _log_storage;
@@ -337,6 +339,7 @@ namespace braft
         fsm_caller_options.after_shutdown =
             brpc::NewCallback<NodeImpl *>(after_shutdown, this);
         fsm_caller_options.log_manager = _log_manager;
+        // 在这里将fsm_caller和用户自定义状态关联起来
         fsm_caller_options.fsm = _options.fsm;
         fsm_caller_options.closure_queue = _closure_queue;
         fsm_caller_options.node = this;
@@ -614,6 +617,7 @@ namespace braft
         }
 
         // init replicator
+        // 初始化replicator, 与日志复制有关
         ReplicatorGroupOptions rg_options;
         rg_options.heartbeat_timeout_ms = heartbeat_timeout(_options.election_timeout_ms);
         rg_options.election_timeout_ms = _options.election_timeout_ms;
@@ -629,6 +633,7 @@ namespace braft
         _replicator_group.init(NodeId(_group_id, _server_id), rg_options);
 
         // set state to follower
+        // 启动后节点的状态默认为follower状态
         _state = STATE_FOLLOWER;
 
         LOG(INFO) << "node " << _group_id << ":" << _server_id << " init,"
@@ -638,6 +643,7 @@ namespace braft
                   << " old_conf: " << _conf.old_conf;
 
         // start snapshot timer
+        // 启动快照计时器
         if (_snapshot_executor && _options.snapshot_interval_s > 0)
         {
             BRAFT_VLOG << "node " << _group_id << ":" << _server_id
@@ -652,6 +658,7 @@ namespace braft
         }
 
         // add node to NodeManager
+        //  将当前节点交给NodeManager管理，其内部会维护所有的Node
         if (!global_node_manager->add(this))
         {
             LOG(ERROR) << "NodeManager add " << _group_id
@@ -662,6 +669,8 @@ namespace braft
         // Now the raft node is started , have to acquire the lock to avoid race
         // conditions
         std::unique_lock<raft_mutex_t> lck(_mutex);
+
+        // 如果_conf里面只有一个自己一个server，则调用elect_self将自己设置为leader
         if (_conf.stable() && _conf.conf.size() == 1u && _conf.conf.contains(_server_id))
         {
             // The group contains only this server which must be the LEADER, trigger
@@ -822,25 +831,32 @@ namespace braft
 
     void NodeImpl::check_dead_nodes(const Configuration &conf, int64_t now_ms)
     {
+        // 获取当前配置下所有的节点
         std::vector<PeerId> peers;
         conf.list_peers(&peers);
+        // 存活的节点数
         size_t alive_count = 0;
         Configuration dead_nodes; // for easily print
         for (size_t i = 0; i < peers.size(); i++)
         {
+            // 当前节点必然是存活的
             if (peers[i] == _server_id)
             {
                 ++alive_count;
                 continue;
             }
 
+            // 检查时间距离最近一次向其发送rpc消息的时间间隔修小于election_timeout_ms，则该节点还活着
+            // ????last_rpc_send_timestamp是leader最近一次给follower发送消息的时间还是follower最近一次响应的时间????
             if (now_ms - _replicator_group.last_rpc_send_timestamp(peers[i]) <= _options.election_timeout_ms)
             {
                 ++alive_count;
                 continue;
             }
+            // 否则标记为失联节点
             dead_nodes.add_peer(peers[i]);
         }
+        // 失联节点数没有达到半数则leader还可以正常工作
         if (alive_count >= peers.size() / 2 + 1)
         {
             return;
@@ -852,6 +868,7 @@ namespace braft
                      << dead_nodes
                      << " conf: " << conf;
         butil::Status status;
+        // 失联节点达到了半数，可能当前leader出现在了小分区，为了防止出现脑裂需要退回到follower状态
         status.set_error(ERAFTTIMEDOUT, "Majority of the group dies");
         step_down(_current_term, false, status);
     }
@@ -861,6 +878,7 @@ namespace braft
         BAIDU_SCOPED_LOCK(_mutex);
 
         // check state
+        // STATE_LEADER和STATE_TRANSFERRING以外的状态不用超时处理
         if (_state > STATE_TRANSFERRING)
         {
             BRAFT_VLOG << "node " << _group_id << ":" << _server_id
@@ -870,6 +888,7 @@ namespace braft
         }
 
         int64_t now = butil::monotonic_time_ms();
+        // 检查新配置下失联的节点
         check_dead_nodes(_conf.conf, now);
         if (!_conf.old_conf.empty())
         {
@@ -1143,6 +1162,8 @@ namespace braft
         }
 
         // Trigger vote manually, or wait until follower lease expire.
+        // 这里还需要根据租约进行判断，即使当前follower长时间没有收到leader的消息，导致_election_timer到期了
+        // 如果租约还没到期，也不会发起pre_vote的，这样就避免了脑裂的发生
         if (!_vote_triggered && !_follower_lease.expired())
         {
 
@@ -1495,6 +1516,9 @@ namespace braft
         {
             return;
         }
+        // 如果 _vote_timer 触发时节点还处于candidate状态，也就是还没有选出leader，则需要进行超时处理: 将状态改回follower
+        // 然后发起新一轮的预投票
+        // 这个参数默认是开启的
         if (FLAGS_raft_step_down_when_vote_timedout)
         {
             // step down to follower
@@ -1507,6 +1531,7 @@ namespace braft
             step_down(_current_term, false, status);
             pre_vote(&lck, false);
         }
+        // 否则如果不开启这个参数，就会重新发起正式投票
         else
         {
             // retry vote
@@ -1533,7 +1558,7 @@ namespace braft
         }
 
         // check state
-        // 确认当前状态是不是candidate
+        // 正式投票请求只有candidate才能发起，如果不是candidate说明可能已经成leader了
         if (_state != STATE_CANDIDATE)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1542,7 +1567,7 @@ namespace braft
             return;
         }
         // check stale response
-
+        // 防止过期的RequestVoteRpc的响应
         if (term != _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1551,7 +1576,7 @@ namespace braft
             return;
         }
         // check response term
-        // 如果收到的term大于自身的term，则回退到follower状态
+        // 如果对方的term大于自身的term，则回退到follower状态
         if (response.term() > _current_term)
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1569,36 +1594,45 @@ namespace braft
                   << " term " << response.term() << " granted " << response.granted()
                   << " rejected_by_lease " << response.rejected_by_lease()
                   << " disrupted " << response.disrupted();
+
+        // 租约到期但是没有收到选票
         if (!response.granted() && !response.rejected_by_lease())
         {
             return;
         }
 
+        // 对方是 leader
         if (response.disrupted())
         {
             _vote_ctx.set_disrupted_leader(DisruptedLeader(peer_id, response.previous_term()));
         }
-        // 获得了该节点的投票
+        // 运行到这里说明租约没到期或者没收到选票，分开判断:
+        // 1. 获得了该节点的投票
         if (response.granted())
         {
+            // 法定票数减1
             _vote_ctx.grant(peer_id);
+            //
             if (peer_id == _follower_lease.last_leader())
             {
                 _vote_ctx.grant(_server_id);
                 _vote_ctx.stop_grant_self_timer(this);
             }
-            // 赢得选举
+            // 每次收到一个节点的投票后法定票数减1，减到0后说明收到了过半数节点的投票
+            // 这时候granted()就返回true，就可以become_leader了
             if (_vote_ctx.granted())
             {
                 return become_leader();
             }
         }
+        // 2. 租约没到期，保留该节点稍后重试
         else
         {
             // If the follower rejected the vote because of lease, reserve it, and
             // the candidate will try again after it disrupt the old leader.
             _vote_ctx.reserve(peer_id);
         }
+        // 重新向该节点发起投票请求
         retry_vote_on_reserved_peers();
     }
 
@@ -1706,22 +1740,27 @@ namespace braft
                   << " term " << response.term() << " granted " << response.granted()
                   << " rejected_by_lease " << response.rejected_by_lease()
                   << " disrupted " << response.disrupted();
-        // 没有收到选票
+
+        // 租约已经过期但是没有收到选票
         if (!response.granted() && !response.rejected_by_lease())
         {
             return;
         }
 
         // Internal vote should respect lease.
+        // 租期还没到
         if (response.rejected_by_lease() && !_pre_vote_ctx.triggered())
         {
             return;
         }
 
+        // 对方是leader
         if (response.disrupted())
         {
             _pre_vote_ctx.set_disrupted_leader(DisruptedLeader(peer_id, response.previous_term()));
         }
+
+        // peers保存投票的节点
         std::set<PeerId> peers;
         if (response.rejected_by_lease())
         {
@@ -1742,6 +1781,7 @@ namespace braft
         for (std::set<PeerId>::const_iterator it = peers.begin();
              it != peers.end(); ++it)
         {
+            // 将法定票数减1
             _pre_vote_ctx.grant(*it);
             if (*it == _follower_lease.last_leader())
             {
@@ -1806,6 +1846,7 @@ namespace braft
     {
         LOG(INFO) << "node " << _group_id << ":" << _server_id
                   << " term " << _current_term << " start pre_vote";
+        // 安装快照时不能发起预投票
         if (_snapshot_executor && _snapshot_executor->is_installing_snapshot())
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -1834,6 +1875,7 @@ namespace braft
             return;
         }
 
+        // 创建ballot并加入票箱，这里可以看出预投票和正式投票的过程是一样的，都是通过Ballot实现的
         _pre_vote_ctx.init(this, triggered);
         std::set<PeerId> peers;
         _conf.list_peers(&peers);
@@ -1889,7 +1931,8 @@ namespace braft
             return;
         }
         // cancel follower election timer
-        // election_timer用于控制candidate选举超时, 如果当前节点是follower, 不需要该计时器
+        // _election_timer 用于开启leader失联后follower的预投票，而当前正在进行正式投票阶段，这表示预投票已经完成了,
+        // 因此需要关闭_election_timer避免新一轮的预投票
         if (_state == STATE_FOLLOWER)
         {
             BRAFT_VLOG << "node " << _group_id << ":" << _server_id
@@ -1907,7 +1950,7 @@ namespace braft
         // 设置状态为candidate, 将自身的term加1
         _state = STATE_CANDIDATE;
         _current_term++;
-        // 给自己投票
+        // 表示已经给自己投过票了，这样就不会再给其他节点的投票请求投票了
         _voted_id = _server_id;
 
         BRAFT_VLOG << "node " << _group_id << ":" << _server_id
@@ -1915,6 +1958,8 @@ namespace braft
         // 启动_vote_timer, 该计时器负责选举阶段的超时
         _vote_timer.start();
         _pre_vote_ctx.reset(this);
+
+        // 为正式投票请求初始化Ballot对象
         _vote_ctx.init(this, false);
 
         // 获取最新的log
@@ -1951,7 +1996,7 @@ namespace braft
             _voted_id.reset();
             return;
         }
-        // 为自己投票
+        // 为自己投票，检查票数，如果票数过半了就调用become_leader()
         grant_self(&_vote_ctx, lck);
     }
 
@@ -2100,6 +2145,7 @@ namespace braft
             // mark _stop_transfer_arg to NULL
             _stop_transfer_arg = NULL;
         }
+        //  启动 _election_timer
         _election_timer.start();
     }
     // in lock
@@ -2193,23 +2239,25 @@ namespace braft
                   << " become leader of group " << _conf.conf
                   << " " << _conf.old_conf;
         // cancel candidate vote timer
-        // _vote_timer用于控制拉选票的时间，一旦candidate成为leader就可以停止该计时器
+        // _vote_timer用于控制请求投票的时间，一旦candidate成为leader就可以停止该计时器
         _vote_timer.stop();
         _vote_ctx.reset(this);
 
-        // 修改当前节点状态为leader
+        // 修改当前节点状态为leader并设置当前的leader节点
         _state = STATE_LEADER;
         _leader_id = _server_id;
 
-        // 设置 _replicator_group  的任期为当前任期
-        // _replicator_group 是啥?
+        // 设置 _replicator_group  的任期
         _replicator_group.reset_term(_current_term);
+
+        // 重置租期
         _follower_lease.reset();
         _leader_lease.on_leader_start(_current_term);
 
         std::set<PeerId> peers;
         _conf.list_peers(&peers);
-        // 将其他节点添加到 _replicator_group
+
+        // 为其他节点创建Replicator并保存到ReplicatorrGroup，由ReplicatorGroup进行管理
         for (std::set<PeerId>::const_iterator
                  iter = peers.begin();
              iter != peers.end(); ++iter)
@@ -2227,12 +2275,15 @@ namespace braft
         }
 
         // init commit manager
+        // 指定下一个待投票的日志的index
         _ballot_box->reset_pending_index(_log_manager->last_log_index() + 1);
 
         // Register _conf_ctx to reject configuration changing before the first log
         // is committed.
         CHECK(!_conf_ctx.is_busy());
+        // 更新配置
         _conf_ctx.flush(_conf.conf, _conf.old_conf);
+        //  启动_stepdown_timer
         _stepdown_timer.start();
     }
 
@@ -2412,6 +2463,8 @@ namespace braft
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
 
+        // 非活跃状态的节点不能进行预投票
+        // 只有处于leader、transferring、follower和candidate状态的节点才能响应预投票
         if (!is_active_state(_state))
         {
             const int64_t saved_current_term = _current_term;
@@ -2438,6 +2491,7 @@ namespace braft
         bool rejected_by_lease = false;
         do
         {
+            // 请求的节点的term比当前节点的term小不会给他投票
             if (request->term() < _current_term)
             {
                 // ignore older term
@@ -2454,8 +2508,14 @@ namespace braft
             lck.lock();
             // pre_vote not need ABA check after unlock&lock
 
+            // 运行到这里说明至少请求的节点的term大于等于当前节点的term
+
+            // votable_time其实就是租约到期的剩余时间
             int64_t votable_time = _follower_lease.votable_time_from_now();
+            // 只有请求的节点的日志比当前节点的日志更新才能够投票给它，判断更新的原则是:
+            // term相等则比较index,index更大日志更新；否则term大的日志更新
             bool grantable = (LogId(request->last_log_index(), request->last_log_term()) >= last_log_id);
+            // 到这里说明是满足执行条件的，因为对方的日志比自己新；但是如果租约还没到期也要拒绝
             if (grantable)
             {
                 granted = (votable_time == 0);
@@ -2527,7 +2587,7 @@ namespace braft
         do
         {
             // ignore older term
-            // 如果请求的term比自身term小, 则忽略该请求
+            // 如果请求的term比自身term小, 则忽略该请求,即不投票
             if (request->term() < _current_term)
             {
                 // ignore older term
@@ -2553,7 +2613,9 @@ namespace braft
                 break;
             }
 
+            // 请求方的日志是否比当前节点的日志更新
             bool log_is_ok = (LogId(request->last_log_index(), request->last_log_term()) >= last_log_id);
+            // 租期到期剩余时间
             int64_t votable_time = _follower_lease.votable_time_from_now();
 
             LOG(INFO) << "node " << _group_id << ":" << _server_id
@@ -2564,6 +2626,7 @@ namespace braft
                       << " votable_time " << votable_time;
 
             // if the vote is rejected by lease, tell the candidate
+            // 租期没过不予投票
             if (votable_time > 0)
             {
                 rejected_by_lease = log_is_ok;
@@ -2571,6 +2634,7 @@ namespace braft
             }
 
             // increase current term, change state to follower
+            // 如果对方的term比自己大，更新自己的term并回退到follower状态
             if (request->term() > _current_term)
             {
                 butil::Status status;
@@ -2581,14 +2645,15 @@ namespace braft
             }
 
             // save
-            // request中的log比自身新且当前节点还未进行投票
+            // request中的log比自身新且当前节点还没给别的节点投票
             if (log_is_ok && _voted_id.is_empty())
             {
                 butil::Status status;
                 status.set_error(EVOTEFORCANDIDATE, "Raft node votes for some candidate, "
                                                     "step down to restart election_timer.");
-                // 回退到follower状态
+                // 当前节点回退到follower状态
                 step_down(request->term(), false, status);
+                // 表示已经给该节点投票了，就不会再投票给别的节点了
                 _voted_id = candidate_id;
                 //TODO: outof lock
                 status = _meta_storage->set_term_and_votedfor(_current_term, candidate_id, _v_group_id);
@@ -2604,10 +2669,13 @@ namespace braft
             }
         } while (0);
 
+        // 如果当前节点是leader或者正在进行TRANSFERRING(leader权禅让)，set_disrupted就为true
         response->set_disrupted(disrupted);
         response->set_previous_term(previous_term);
+        // 返回当前节点的term
         response->set_term(_current_term);
         response->set_granted(request->term() == _current_term && _voted_id == candidate_id);
+        // 如果对方满足投票要求，但是因为当前节点租期还没过导致无法给对方投票，set_rejected_by_lease就为true
         response->set_rejected_by_lease(rejected_by_lease);
         return 0;
     }
@@ -3755,11 +3823,13 @@ namespace braft
     {
         CHECK(!is_busy());
         conf.list_peers(&_new_peers);
+        // 没有旧配置，说明在上一个leader崩溃时没有进行或者已经完成配置更新操作
         if (old_conf.empty())
         {
             _stage = STAGE_STABLE;
             _old_peers = _new_peers;
         }
+        // 有旧配置
         else
         {
             _stage = STAGE_JOINT;
@@ -4118,24 +4188,33 @@ namespace braft
         // If follower lease expired, we can safely grant self. Otherwise, we wait util:
         // 1. last active leader vote the node, and we grant two votes together;
         // 2. follower lease expire.
+
+        // votable_time_from_now是计算当前时间与租约截止时间的差值，返回0表示已经过了租期，这时候换主不会导致脑裂
+        // 不为0时表示当前还有多久租期才过，需要等待wait_ms
         int64_t wait_ms = _follower_lease.votable_time_from_now();
         if (wait_ms == 0)
         {
+            // 给自己投一票
             vote_ctx->grant(_server_id);
+            // granted()判断Ballox对象的法定票数是否减到0，如果减到0说明已经或得了过半数的票数
+            // 否则就说明拉选票失败，后面就不用执行了
             if (!vote_ctx->granted())
             {
                 return;
             }
+            // 当前是预投票
             if (vote_ctx == &_pre_vote_ctx)
             {
                 elect_self(lck);
             }
+            // 当前是正式投票
             else
             {
                 become_leader();
             }
             return;
         }
+        // 等待wait_ms时间才能开始执行 grant_self
         vote_ctx->start_grant_self_timer(wait_ms, this);
     }
 
