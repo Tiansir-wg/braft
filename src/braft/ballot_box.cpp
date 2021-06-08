@@ -77,9 +77,9 @@ namespace braft
             Ballot &bl = _pending_meta_queue[log_index - _pending_index];
             // 调用 grant 将 quoroum 减1， 表示投了一票
             pos_hint = bl.grant(peer, pos_hint);
+
             // quoroum和_old_quorum初始值为新旧配置下的半数节点数加1
             // 只要quoroum == 0或者_old_quorum == 0之一满足表示获得了过半数的投票，表示commit了
-
             if (bl.granted())
             {
                 last_committed_index = log_index;

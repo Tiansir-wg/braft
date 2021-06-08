@@ -2188,7 +2188,7 @@ namespace braft
         }
         // 不可能请求的term比当前term小，因为check之前就已经处理了
         // 运行到这里说明请求的term和当前的term相等
-        // 所有活跃状态中除了follower状态之外， 其他状态需要进行step_down
+        // 如果当前节点不是follower， 进行step_down
         else if (_state != STATE_FOLLOWER)
         {
             status.set_error(ENEWLEADER, "Candidate receives message "
@@ -2798,7 +2798,7 @@ namespace braft
         // 将当前的term发送给leader
         response->set_term(_current_term);
 
-        // 只有活跃状态的节点才能处理
+        // 只有活跃状态的节点执行append_entries
         if (!is_active_state(_state))
         {
             const int64_t saved_current_term = _current_term;
@@ -2814,6 +2814,7 @@ namespace braft
         }
 
         PeerId server_id;
+
         //从请求中获取请求的server_id
         if (0 != server_id.parse(request->server_id()))
         {

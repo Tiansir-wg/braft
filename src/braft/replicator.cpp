@@ -107,6 +107,7 @@ namespace braft
 
         r->_options = options;
         r->_next_index = r->_options.log_manager->last_log_index() + 1;
+        // 注册一个 _on_error 函数，当调用 bthread_id_error() 时会触发该函数
         if (bthread_id_create(&r->_id, r, _on_error) != 0)
         {
             LOG(ERROR) << "Fail to create bthread_id"
@@ -128,7 +129,12 @@ namespace braft
         LOG(INFO) << "Replicator=" << r->_id << "@" << r->_options.peer_id << " is started"
                   << ", group " << r->_options.group_id;
         r->_catchup_closure = NULL;
+
+        // 更新最近一次发送rpc的时间
+        // ???为什么是发送时间而不是接受到响应的时间???
+        // ???还有其他地方会更新这个时间嘛???
         r->_update_last_rpc_send_timestamp(butil::monotonic_time_ms());
+
         //开启心跳计时器
         r->_start_heartbeat_timer(butil::gettimeofday_us());
         // Note: r->_id is unlock in _send_empty_entries, don't touch r ever after
@@ -315,6 +321,8 @@ namespace braft
             return;
         }
         r->_consecutive_error_times = 0;
+
+        // 对方响应的term比自己大，当前节点 step_down, 更新term
         if (response->term() > r->_options.term)
         {
             ss << " fail, greater term " << response->term()
@@ -333,6 +341,7 @@ namespace braft
                                                   "heartbeat_response from peer:%s",
                              r->_options.peer_id.to_string().c_str());
             r->_destroy();
+            // ###
             node_impl->increase_term_to(response->term(), status);
             node_impl->Release();
             return;
@@ -340,7 +349,12 @@ namespace braft
 
         bool readonly = response->has_readonly() && response->readonly();
         BRAFT_VLOG << ss.str() << " readonly " << readonly;
+
+        // 收到心跳响应后更新 _last_rpc_send_timestamp
+        // 设置的是当前节点发送心跳消息时的时间
         r->_update_last_rpc_send_timestamp(rpc_send_time);
+
+        // 重新启动心跳计时器，计算下一次发送心跳的时间
         r->_start_heartbeat_timer(start_time_us);
         NodeImpl *node_impl = NULL;
         // Check if readonly config changed
@@ -577,9 +591,11 @@ namespace braft
                                         int64_t prev_log_index,
                                         bool is_heartbeat)
     {
+        // ???prev_log_term什么情况下会是0???
         const int64_t prev_log_term = _options.log_manager->get_term(prev_log_index);
         if (prev_log_term == 0 && prev_log_index != 0)
         {
+            // 非心跳消息
             if (!is_heartbeat)
             {
                 CHECK_LT(prev_log_index, _options.log_manager->first_log_index());
@@ -587,6 +603,7 @@ namespace braft
                            << " log_index=" << prev_log_index << " was compacted";
                 return -1;
             }
+            //  心跳消息
             else
             {
                 // The log at prev_log_index has been compacted, which indicates
@@ -612,13 +629,17 @@ namespace braft
         std::unique_ptr<brpc::Controller> cntl(new brpc::Controller);
         std::unique_ptr<AppendEntriesRequest> request(new AppendEntriesRequest);
         std::unique_ptr<AppendEntriesResponse> response(new AppendEntriesResponse);
+        // 填充request
         if (_fill_common_fields(
                 request.get(), _next_index - 1, is_heartbeat) != 0)
         {
             CHECK(!is_heartbeat);
             // _id is unlock in _install_snapshot
+            // 安装快照
             return _install_snapshot();
         }
+
+        // 心跳请求
         if (is_heartbeat)
         {
             _heartbeat_in_fly = cntl->call_id();
@@ -626,6 +647,7 @@ namespace braft
             // set RPC timeout for heartbeat, how long should timeout be is waiting to be optimized.
             cntl->set_timeout_ms(*_options.election_timeout_ms / 2);
         }
+        // 非心跳请求
         else
         {
             _st.st = APPENDING_ENTRIES;
@@ -643,6 +665,8 @@ namespace braft
                    << " prev_log_index " << request->prev_log_index()
                    << " last_committed_index " << request->committed_index();
 
+        // 节点收到响应后的回调， 如果是心跳请求则回调 _on_heartbeat_returned
+        // 否则回调 _on_rpc_returned
         google::protobuf::Closure *done = brpc::NewCallback(
             is_heartbeat ? _on_heartbeat_returned : _on_rpc_returned,
             _id.value, cntl.get(), request.get(), response.get(),
@@ -650,7 +674,7 @@ namespace braft
 
         RaftService_Stub stub(&_sending_channel);
 
-        // 其他节点收到心跳entry的rpc后，会调用 handle_append_entries_request
+        // 其他节点收到心跳entry的rpc后，会调用 append_entries
         stub.append_entries(cntl.release(), request.release(),
                             response.release(), done);
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
@@ -1104,16 +1128,18 @@ namespace braft
     void Replicator::_on_timedout(void *arg)
     {
         bthread_id_t id = {(uint64_t)arg};
+        // 执行这个就会触发注册的 _on_error 函数
         bthread_id_error(id, ETIMEDOUT);
     }
 
     void Replicator::_start_heartbeat_timer(long start_time_us)
     {
+        // 计算下一次发送心跳的时间
         const timespec due_time = butil::milliseconds_from(
             butil::microseconds_to_timespec(start_time_us),
             *_options.dynamic_heartbeat_timeout_ms);
 
-        // 开启 _heartbeat_timer,超时时执行_on_timedout
+        // 开启 _heartbeat_timer, 系统时间到达due_time时执行_on_timedout函数
         if (bthread_timer_add(&_heartbeat_timer, due_time,
                               _on_timedout, (void *)_id.value) != 0)
         {

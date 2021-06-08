@@ -58,11 +58,16 @@ namespace braft
             caller->do_shutdown();
             return 0;
         }
+        // 记录当前状态机commit的日志的最大index
         int64_t max_committed_index = -1;
+        // 记录当前累积了多少个日志，达到 batch_size 时进行一次提交
         int64_t counter = 0;
+        // 状态机批量提交的最大日志数
         size_t batch_size = FLAGS_raft_fsm_caller_commit_batch;
+
         for (; iter; ++iter)
         {
+            // 当前任务类型是 COMMITTED 且还不够一个batch，继续累加
             if (iter->type == COMMITTED && counter < batch_size)
             {
                 if (iter->committed_index > max_committed_index)
@@ -73,11 +78,15 @@ namespace braft
             }
             else
             {
+                // 只要apply队列出现了COMMITTED类型的任务，那么max_committed_index必然大于等于0，那就执行do_committed进行处理
+                // 并且还要还原 max_committed_index
                 if (max_committed_index >= 0)
                 {
                     caller->_cur_task = COMMITTED;
+                    // ###
                     caller->do_committed(max_committed_index);
                     max_committed_index = -1;
+
                     g_commit_tasks_batch_counter << counter;
                     counter = 0;
                     batch_size = FLAGS_raft_fsm_caller_commit_batch;
@@ -131,6 +140,8 @@ namespace braft
                 };
             }
         }
+
+        // 有一种情况是当前队列全部是committed类型的任务且不足一个批次，最开始判断无法对这种情况进行处理，只能在这里处理
         if (max_committed_index >= 0)
         {
             caller->_cur_task = COMMITTED;
@@ -138,6 +149,7 @@ namespace braft
             g_commit_tasks_batch_counter << counter;
             counter = 0;
         }
+
         caller->_cur_task = IDLE;
         return 0;
     }
@@ -159,6 +171,9 @@ namespace braft
         return true;
     }
 
+    // 初始化操作主要执行了两步操作:
+    // 1.根据传递的参数进行一些变量的初始化
+    // 2.启动线程对队列中的每一个ApplyTask执行 FSMCaller::run 方法，执行FSMCaller的主要逻辑
     int FSMCaller::init(const FSMCallerOptions &options)
     {
         if (options.log_manager == NULL || options.fsm == NULL || options.closure_queue == NULL)
@@ -182,6 +197,8 @@ namespace braft
         execq_opt.bthread_attr = options.usercode_in_pthread
                                      ? BTHREAD_ATTR_PTHREAD
                                      : BTHREAD_ATTR_NORMAL;
+
+        // ###
         if (bthread::execution_queue_start(&_queue_id,
                                            &execq_opt,
                                            FSMCaller::run,
@@ -295,6 +312,9 @@ namespace braft
             butil::memory_order_relaxed);
 
         // We can tolerate the disorder of committed_index
+
+        // committed_index小于last_applied_index，说明当前提交的位置后面已经有日志apply过了
+        // 这在顺序raft里面是不允许的
         if (last_applied_index >= committed_index)
         {
             return;
@@ -310,6 +330,7 @@ namespace braft
         {
             if (iter_impl.entry()->type != ENTRY_TYPE_DATA)
             {
+                //  配置类型的entry
                 if (iter_impl.entry()->type == ENTRY_TYPE_CONFIGURATION)
                 {
                     if (iter_impl.entry()->old_peers == NULL)
@@ -347,8 +368,11 @@ namespace braft
         const int64_t last_index = iter_impl.index() - 1;
         const int64_t last_term = _log_manager->get_term(last_index);
         LogId last_applied_id(last_index, last_term);
+
+        // 更新_last_applied_index和_last_applied_term，这两个记录了应用到状态机的最后一个log的index和term
         _last_applied_index.store(committed_index, butil::memory_order_release);
         _last_applied_term = last_term;
+
         _log_manager->set_applied_id(last_applied_id);
     }
 
