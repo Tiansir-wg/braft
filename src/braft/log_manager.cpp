@@ -202,6 +202,36 @@ namespace braft
         }
     }
 
+    /////////
+    /////////
+    /////////
+    // 未完成
+    // 需要考虑snapshot的问题
+    int64_t LogManager::max_committed_index(bool is_flush)
+    {
+        // std::unique_lock<raft_mutex_t> lck(_mutex);
+        // if (!is_flush)
+        // {
+        //     return _max_committed_index;
+        // }
+        // else
+        // {
+        //     if (_last_log_index == _last_snapshot_id.index)
+        //     {
+        //         return _last_log_index;
+        //     }
+        //     LastLogIdClosure c;
+        //     CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c));
+        //     lck.unlock();
+        //     c.wait();
+        //     return c.last_log_id().index;
+        // }
+        return _max_committed_index;
+    }
+
+    /////////
+    /////////
+    /////////
     LogId LogManager::last_log_id(bool is_flush)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
@@ -428,13 +458,14 @@ namespace braft
                 return 1;
             }
             // 发过来的第一个entry与之前已提交的连续最大的entry连续，说明没有冲突，修改_last_log_index即可
+            // 说明applied_index + 1到最后一条日志之间的是可以添加到本地的
             // ???疑问: 怎么保证发过来的entries是连续的???
             if (entries->front()->id.index == _last_log_index + 1)
             {
                 // Fast path
                 _last_log_index = entries->back()->id.index;
             }
-            // 发过来的第一个entry与之前已提交的entry重叠了，可能会发生冲突
+            // 如果日志开头有一部分在_last_log_index + 1位置之前，说明日志开头到_last_log_index位置的日志是重复发送的
             // 因此遍历entrys找到第一个冲突的位置
             else
             {

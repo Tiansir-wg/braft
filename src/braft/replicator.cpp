@@ -106,6 +106,7 @@ namespace braft
         }
 
         r->_options = options;
+
         r->_next_index = r->_options.log_manager->last_log_index() + 1;
         // 注册一个 _on_error 函数，当调用 bthread_id_error() 时会触发该函数
         if (bthread_id_create(&r->_id, r, _on_error) != 0)
@@ -263,6 +264,9 @@ namespace braft
         const timespec due_time = butil::milliseconds_from(
             butil::microseconds_to_timespec(start_time_us), blocking_time);
         bthread_timer_t timer;
+
+        //////###########
+        // 这里会延长计时器的时间，然后等到时间到了再次执行
         const int rc = bthread_timer_add(&timer, due_time,
                                          _on_block_timedout, (void *)_id.value);
         if (rc == 0)
@@ -386,6 +390,7 @@ namespace braft
         std::unique_ptr<brpc::Controller> cntl_guard(cntl);
         std::unique_ptr<AppendEntriesRequest> req_guard(request);
         std::unique_ptr<AppendEntriesResponse> res_guard(response);
+
         // 获取对应的 replicator
         Replicator *r = NULL;
         bthread_id_t dummy_id = {id};
@@ -443,6 +448,8 @@ namespace braft
             // it comes back or be removed
             // dummy_id is unlock in block
             r->_reset_next_index();
+
+            ////########
             return r->_block(start_time_us, cntl->ErrorCode());
         }
         r->_consecutive_error_times = 0;
@@ -467,20 +474,27 @@ namespace braft
                                                       "%s from peer:%s",
                                  response->GetTypeName().c_str(), r->_options.peer_id.to_string().c_str());
                 r->_destroy();
-                // 更新当前节点的term
+
+                // 执行 step_down
                 node_impl->increase_term_to(response->term(), status);
                 node_impl->Release();
                 return;
             }
+
+            // 否则说明，follower的日志跟prev_log_index和prev_log_term不匹配
             ss << " fail, find next_index remote last_log_index " << response->last_log_index()
                << " local next_index " << r->_next_index
                << " rpc prev_log_index " << request->prev_log_index();
             BRAFT_VLOG << ss.str();
+
+            // 更新last_rpc_send_timestamp防止step_down_timer将此节点标记为失联节点
             r->_update_last_rpc_send_timestamp(rpc_send_time);
             // prev_log_index and prev_log_term doesn't match
             r->_reset_next_index();
 
             // 如果follower的last_log_index比_next_index小，则更新_next_index，下一次向follower复制日志时从该位置开始
+            // 也就是说follower内存中的最后一条日志和下一个将发送给它的日志之间有间隙, 应该将下一个发送的位置设置到follower
+            // 缺失的第一条日志
             if (response->last_log_index() + 1 < r->_next_index)
             {
                 BRAFT_VLOG << "Group " << r->_options.group_id
@@ -490,8 +504,8 @@ namespace braft
                 r->_next_index = response->last_log_index() + 1;
             }
 
-            // 如果follower的last_log_index比_next_index大,说明follower的日志需要截断
-            // 需要逐步减小_next_index并发送空的entry，以确定匹配的位置
+            // 如果follower的last_log_index比_next_index大,也就是说_next_index和last_log_index之间这部分follower 已经有了
+            // 所以follower的内存日志需要截断。需要逐步减小_next_index并发送空的entry，以确定匹配的位置
             else
             {
                 // The peer contains logs from old term which should be truncated,
@@ -511,6 +525,7 @@ namespace braft
                 }
             }
             // dummy_id is unlock in _send_heartbeat
+            // 再次发送空的entry寻找匹配的位置
             r->_send_empty_entries(false);
             return;
         }
@@ -530,8 +545,12 @@ namespace braft
             CHECK_EQ(0, bthread_id_unlock(r->_id)) << "Fail to unlock " << r->_id;
             return;
         }
+        /////
         r->_update_last_rpc_send_timestamp(rpc_send_time);
+
+        // 请求中的entry数
         const int entries_size = request->entries_size();
+        // 请求中最后一个entry的index
         const int64_t rpc_last_log_index = request->prev_log_index() + entries_size;
         BRAFT_VLOG_IF(entries_size > 0) << "Group " << r->_options.group_id
                                         << " replicated logs in ["
@@ -542,6 +561,7 @@ namespace braft
         // entries_size > 0 表示不是空的rpc，此处调用 ballot_box->commit_at进行投票
         if (entries_size > 0)
         {
+            ///
             r->_options.ballot_box->commit_at(
                 min_flying_index, rpc_last_log_index,
                 r->_options.peer_id);
@@ -580,7 +600,7 @@ namespace braft
             r->_send_timeout_now(false, false);
         }
 
-        // 开始发送entry
+        // 开始正式发送entry
         r->_send_entries();
         return;
     }
@@ -761,7 +781,7 @@ namespace braft
         const int max_entries_size = FLAGS_raft_max_entries_size - _flying_append_entries_size;
         int prepare_entry_rc = 0;
         CHECK_GT(max_entries_size, 0);
-        // 获取entry添加到request中
+        // 这里将entry的数据添加到request中
         for (int i = 0; i < max_entries_size; ++i)
         {
             prepare_entry_rc = _prepare_entry(i, &em, &cntl->request_attachment());
@@ -772,6 +792,7 @@ namespace braft
             request->add_entries()->Swap(&em);
         }
 
+        // 如果没有entry就等等
         if (request->entries_size() == 0)
         {
             // _id is unlock in _wait_more
@@ -802,6 +823,7 @@ namespace braft
         _append_entries_in_fly.push_back(FlyingAppendEntriesRpc(_next_index,
                                                                 request->entries_size(), cntl->call_id()));
         _append_entries_counter++;
+        // 更新下一个发送的位置
         _next_index += request->entries_size();
         _flying_append_entries_size += request->entries_size();
 
@@ -813,11 +835,13 @@ namespace braft
                    << " prev_log_index " << request->prev_log_index()
                    << " prev_log_term " << request->prev_log_term()
                    << " next_index " << _next_index << " count " << request->entries_size();
+
+        // 更新状态信息和位置信息
         _st.st = APPENDING_ENTRIES;
         _st.first_log_index = _min_flying_index();
         _st.last_log_index = _next_index - 1;
 
-        //  注意回调函数  _on_rpc_returned
+        //  这里就是向follower发送带数据的entry了。注意回调函数  _on_rpc_returned
         google::protobuf::Closure *done = brpc::NewCallback(
             _on_rpc_returned, _id.value, cntl.get(),
             request.get(), response.get(), butil::monotonic_time_ms());

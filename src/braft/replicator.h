@@ -254,7 +254,7 @@ namespace braft
         };
 
         brpc::Channel _sending_channel;
-        int64_t _next_index;
+        int64_t _next_index; // 最后一条内存log的下一个index
         int64_t _flying_append_entries_size;
         int _consecutive_error_times;
         bool _has_succeeded;

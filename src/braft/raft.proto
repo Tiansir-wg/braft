@@ -29,6 +29,8 @@ message RequestVoteRequest {
     required int64 last_log_term = 5;
     required int64 last_log_index = 6;
     optional TermLeader disrupted_leader = 7;
+    // 预投票阶段将当前节点持有的entry发过去
+    repeated EntryMeta entries = 8;
 };
 
 message RequestVoteResponse {
@@ -37,6 +39,8 @@ message RequestVoteResponse {
     optional bool disrupted = 3;
     optional int64 previous_term = 4;
     optional bool rejected_by_lease = 5;
+    // 预投票阶段收到请求的节点请求节点没有的entry发过去(自己得有)
+    repeated EntryMeta entries = 6;
 };
 
 message AppendEntriesRequest {
