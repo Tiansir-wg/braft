@@ -117,13 +117,6 @@ namespace braft
         //  success return last memory and logstorage index, empty return 0
         int64_t last_log_index(bool is_flush = false);
 
-        //////////////
-        // 获取乱序提交的最后一个index
-        int64_t max_committed_index(bool is_flush = false);
-
-        //////////////
-        //////////////
-
         // Return the id the last log.
         LogId last_log_id(bool is_flush = false);
 
@@ -241,14 +234,6 @@ namespace braft
         LogId _virtual_first_log_id;
 
         bthread::ExecutionQueueId<StableClosure *> _disk_queue;
-
-        /////////////
-        /////////////
-        // +乱序commit的最后一个entry的index
-        int64_t _max_committed_index;
-
-        /////////////
-        /////////////
     };
 
 } //  namespace braft

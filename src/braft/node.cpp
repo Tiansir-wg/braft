@@ -1880,24 +1880,6 @@ namespace braft
         std::set<PeerId> peers;
         _conf.list_peers(&peers);
 
-        //////////////////////////////
-        //////////////////////////////
-        // 请求预投票时当前节点从顺序commit的entry的下一个位置开始一直到_max_committed_index之间的已经commit的entry发送给其他节点
-        int64_t vote_exchange_start = _log_manager->last_log_index() + 1;
-        int64_t vote_exchange_end = _log_manager->max_committed_index();
-
-        EntryMeta em;
-
-        // 计算max_entry_size
-        // const int max_entries_size = FLAGS_raft_max_entries_size - _flying_append_entries_size;
-        // !!!!这里是不是要考虑一下最大的大小!!!!
-        const int max_entries_size = vote_exchange_end - vote_exchange_start + 1;
-        int prepare_entry_rc = 0;
-        CHECK_GT(max_entries_size, 0);
-
-        //////////////////////////////
-        //////////////////////////////
-
         // 循环向所有其它的peer节点发送preVote Rpc
         for (std::set<PeerId>::const_iterator
                  iter = peers.begin();
@@ -1929,23 +1911,6 @@ namespace braft
             done->request.set_term(_current_term + 1); // next term
             done->request.set_last_log_index(last_log_id.index);
             done->request.set_last_log_term(last_log_id.term);
-
-            //////////////
-            //////////////
-            // 这里设置携带过去的entry
-            // 获取entry添加到request中
-            for (int i = 0; i < max_entries_size; ++i)
-            {
-                prepare_entry_rc = _prepare_entry(i, &em, &cntl->request_attachment());
-                if (prepare_entry_rc != 0)
-                {
-                    break;
-                }
-                done->request->add_entries()->Swap(&em);
-            }
-
-            //////////////
-            //////////////
 
             RaftService_Stub stub(&channel);
             // 发送pre_vote rpc请求

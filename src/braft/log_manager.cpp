@@ -202,37 +202,7 @@ namespace braft
         }
     }
 
-    /////////
-    /////////
-    /////////
-    // 未完成
-    // 需要考虑snapshot的问题
-    int64_t LogManager::max_committed_index(bool is_flush)
-    {
-        // std::unique_lock<raft_mutex_t> lck(_mutex);
-        // if (!is_flush)
-        // {
-        //     return _max_committed_index;
-        // }
-        // else
-        // {
-        //     if (_last_log_index == _last_snapshot_id.index)
-        //     {
-        //         return _last_log_index;
-        //     }
-        //     LastLogIdClosure c;
-        //     CHECK_EQ(0, bthread::execution_queue_execute(_disk_queue, &c));
-        //     lck.unlock();
-        //     c.wait();
-        //     return c.last_log_id().index;
-        // }
-        return _max_committed_index;
-    }
-
-    /////////
-    /////////
-    /////////
-    LogId LogManager::last_log_id(bool is_flush)
+        LogId LogManager::last_log_id(bool is_flush)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
         if (!is_flush)
