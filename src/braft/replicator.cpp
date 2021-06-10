@@ -558,7 +558,8 @@ namespace braft
                                         << rpc_last_log_index
                                         << "] to peer " << r->_options.peer_id;
 
-        // entries_size > 0 表示不是空的rpc，此处调用 ballot_box->commit_at进行投票
+        // entries_size > 0 表示不是空的rpc，此处调用 ballot_box->commit_at为自己投票并判断是否获得了过半数节点
+        // 的投票，以决定是否进行最后的提交和apply
         if (entries_size > 0)
         {
             ///

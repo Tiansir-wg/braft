@@ -184,6 +184,8 @@ namespace braft
         {
             _last_committed_index.store(last_committed_index, butil::memory_order_relaxed);
             lck.unlock();
+            ////#######
+            // 这里会执行定义的状态机的操作
             _waiter->on_committed(last_committed_index);
         }
         return 0;

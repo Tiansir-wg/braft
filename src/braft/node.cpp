@@ -2744,6 +2744,7 @@ namespace braft
                 _node->Release();
             }
         }
+        // follower收到leader的entry，等到entry持久化之后回调执行
         void run()
         {
             brpc::ClosureGuard done_guard(_done);
@@ -2754,6 +2755,9 @@ namespace braft
                 return;
             }
             std::unique_lock<raft_mutex_t> lck(_node->_mutex);
+            // _term 是收到leader的entry时当前节点的term，_node->_current_term是进行回调时当前节点的term
+            // 不相等说明在此期间出现了新的leader，当前节点的term被新的leader改变了。
+            // 这个时候不能向leader投票，即使投票了这些entry也会被截断
             if (_term != _node->_current_term)
             {
                 // The change of term indicates that leader has been changed during
@@ -2783,6 +2787,7 @@ namespace braft
             _response->set_term(_term);
 
             // 获取已经commit的日志的index
+            // _request->committed_index()是leader发出的append entry请求的committed_index
             const int64_t committed_index =
                 std::min(_request->committed_index(),
                          // ^^^ committed_index is likely less than the
@@ -2794,6 +2799,7 @@ namespace braft
                 );
             //_ballot_box is thread safe and tolerates disorder.
             // 更新commited_index
+            // 调用状态机操作
             _node->_ballot_box->set_last_committed_index(committed_index);
             int64_t now = butil::cpuwide_time_us();
             if (FLAGS_raft_trace_append_entry_latency && now - metric.start_time_us >
@@ -3029,9 +3035,11 @@ namespace braft
         // check out-of-order cache
         check_append_entries_cache(index);
 
+        // follower的回调函数
         FollowerStableClosure *c = new FollowerStableClosure(
             cntl, request, response, done_guard.release(),
             this, _current_term);
+        // #####
         _log_manager->append_entries(&entries, c);
 
         // update configuration after _log_manager updated its memory status

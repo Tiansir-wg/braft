@@ -654,6 +654,8 @@ namespace braft
                             EIO, "Corrupted LogStorage");
                     }
                     _storage[i]->update_metric(&metric);
+                    // 执行回调函数
+                    // LeaderStableClosure::Run和FollowerStableClosure::Run
                     _storage[i]->Run();
                 }
                 _to_append.clear();
@@ -670,6 +672,7 @@ namespace braft
             if (_size == _cap ||
                 _buffer_size >= (size_t)FLAGS_raft_max_append_buffer_size)
             {
+                // 日志的持久化
                 flush();
             }
             _storage[_size++] = done;
@@ -709,6 +712,7 @@ namespace braft
         AppendBatcher ab(storage, ARRAY_SIZE(storage), &last_id, log_manager);
         // iter应该是disk_queue的元素迭代器，每一个元素都是StableCloser对象，每个StableCloser对象内部有多个entry
         // 对Leader来说，iter就是LeaderStableCloser对象
+        // 对follower来说，就是FollowerStableClosure对象
         for (; iter; ++iter)
         {
             // ^^^ Must iterate to the end to release to corresponding
@@ -716,10 +720,12 @@ namespace braft
             StableClosure *done = *iter;
             done->metric.bthread_queue_time_us = butil::cpuwide_time_us() -
                                                  done->metric.start_time_us;
+            // 非空的entry，也就是携带状态机数据的entry
             if (!done->_entries.empty())
             {
                 ab.append(done);
             }
+            // 空的entry，比如投票的entry
             else
             {
                 ab.flush();
