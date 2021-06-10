@@ -1880,6 +1880,15 @@ namespace braft
         std::set<PeerId> peers;
         _conf.list_peers(&peers);
 
+        ////////////
+        // 获取当前节点顺序提交的最后日志和乱序提交的最后日志的index
+        int64_t last_applied_index = _fsm_caller->last_applied_index();
+        int64_t max_applied_index = _fsm_caller->max_applied_index();
+        u_int32_t bits[16];
+        _fsm_caller->copy_bits(bits, 16);
+
+        ////////////
+
         // 循环向所有其它的peer节点发送preVote Rpc
         for (std::set<PeerId>::const_iterator
                  iter = peers.begin();
@@ -1911,6 +1920,17 @@ namespace braft
             done->request.set_term(_current_term + 1); // next term
             done->request.set_last_log_index(last_log_id.index);
             done->request.set_last_log_term(last_log_id.term);
+
+            ////////////
+            ////////////
+            done->request.set_last_applied_index(last_applied_index);
+            done->request.set_max_applied_index(max_applied_index);
+            for (int i = 0; i < 16; i++)
+            {
+                done->request.add_bits(bits[i]);
+            }
+            ////////////
+            ////////////
 
             RaftService_Stub stub(&channel);
             // 发送pre_vote rpc请求

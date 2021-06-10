@@ -29,8 +29,17 @@ message RequestVoteRequest {
     required int64 last_log_term = 5;
     required int64 last_log_index = 6;
     optional TermLeader disrupted_leader = 7;
-    // 预投票阶段将当前节点持有的entry发过去
-    repeated EntryMeta entries = 8;
+
+    ////////////
+    optional int64 last_applied_index = 8;
+    // 第i位为比特1表示index = last_applied_index + i 位置的日志在当前节点存在
+    // 这个值和raft_fsm_caller_commit_batch保持一致, 默认是512比特
+    // !!!!! 后面可能需要修改  !!!!!
+    repeated int32 bits = 9;
+    optional int64 max_applied_index =  10;
+    
+    // 以上用于pre_vote阶段
+    ////////////
 };
 
 message RequestVoteResponse {
@@ -39,8 +48,11 @@ message RequestVoteResponse {
     optional bool disrupted = 3;
     optional int64 previous_term = 4;
     optional bool rejected_by_lease = 5;
-    // 预投票阶段收到请求的节点请求节点没有的entry发过去(自己得有)
+    
+    ////////////
+    // 向请求方发送自己全部的entry
     repeated EntryMeta entries = 6;
+    ////////////
 };
 
 message AppendEntriesRequest {
