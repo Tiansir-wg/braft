@@ -2558,6 +2558,60 @@ namespace braft
         response->set_disrupted(_state == STATE_LEADER);
         response->set_previous_term(_current_term);
 
+        //////////////
+        //////////////
+        //  不管给不给他投票都把对方缺失的日志发过去
+
+        // 未完成---怎么在响应中发送attachment
+
+        int64_t last_applied_index = request->last_applied_index();
+        int bits_size = request->bits_size();
+        int64_t last_log_index = _log_manager->last_log_index();
+        for (int64_t i = last_applied_index + 1; i <= last_log_index; i++)
+        {
+            u_int32_t num = (u_int32_t)request->bits((i - last_applied_index) / 32);
+            u_int32_t bit = num >> (31 - (i - last_applied_index) % 32);
+            // 等于1说明对方存在
+            if ((bit & 1) == 1)
+            {
+                continue;
+            }
+            // 对方没有
+            else
+            {
+                EntryMeta em;
+                // 从log_manager中获取
+                LogEntry *entry = _log_manager->get_entry(i);
+                // 自己也没有
+                if (entry == NULL)
+                {
+                    continue;
+                }
+                em.set_term(entry->id.term);
+                em.set_type(entry->type);
+                if (entry->peers != NULL)
+                {
+                    for (size_t i = 0; i < entry->peers->size(); ++i)
+                    {
+                        em.add_peers((*entry->peers)[i].to_string());
+                    }
+                    if (entry->old_peers != NULL)
+                    {
+                        for (size_t i = 0; i < entry->old_peers->size(); ++i)
+                        {
+                            em.add_old_peers((*entry->old_peers)[i].to_string());
+                        }
+                    }
+                }
+                em.set_data_len(entry->data.length());
+                entry->Release();
+                response->add_entries()->Swap(&em);
+            }
+        }
+
+        //////////////
+        //////////////
+
         return 0;
     }
 

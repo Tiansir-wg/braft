@@ -52,6 +52,8 @@ message RequestVoteResponse {
     ////////////
     // 向请求方发送自己全部的entry
     repeated EntryMeta entries = 6;
+    // 是否还有entry没发完
+    optional bool has_more = 7;
     ////////////
 };
 
