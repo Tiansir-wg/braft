@@ -227,6 +227,7 @@ namespace braft
             set_error(EIO, "CreateDirectory failed, path: %s", _path.c_str());
             return EIO;
         }
+        // 加载snapshot的meta
         std::string meta_path = _path + "/" BRAFT_SNAPSHOT_META_FILE;
         if (_fs->path_exists(meta_path) &&
             _meta_table.load_from_file(_fs, meta_path) != 0)
@@ -248,11 +249,14 @@ namespace braft
                 delete dir_reader;
                 return EIO;
             }
+            // 处理该目录下的所有文件或目录
             while (dir_reader->next())
             {
                 std::string filename = dir_reader->name();
+                // 标记所有名称不是__raft_snapshot_meta的文件
                 if (filename != BRAFT_SNAPSHOT_META_FILE)
                 {
+                    // 如果文件不在meta中就标记为待删除
                     if (get_file_meta(filename, NULL) != 0)
                     {
                         to_remove.push_back(filename);
@@ -260,6 +264,7 @@ namespace braft
                 }
             }
             delete dir_reader;
+            // 删除文件
             for (size_t i = 0; i < to_remove.size(); ++i)
             {
                 std::string file_path = _path + "/" + to_remove[i];
@@ -650,6 +655,7 @@ namespace braft
 
         do
         {
+            // 判断临时目录存在否
             std::string snapshot_path(_path);
             snapshot_path.append("/");
             snapshot_path.append(_s_temp_path);
@@ -664,7 +670,9 @@ namespace braft
                 }
             }
 
+            // 创建一个和临时目录绑定的Writer
             writer = new LocalSnapshotWriter(snapshot_path, _fs.get());
+
             if (writer->init() != 0)
             {
                 LOG(ERROR) << "Fail to init writer, path: " << snapshot_path;
@@ -687,6 +695,7 @@ namespace braft
         copier->_fs = _fs.get();
         copier->_throttle = _snapshot_throttle.get();
         // 在init函数中实际调用了 RemoteFileCopier 的init方法
+        // 其实就是从uri里面把各部分解析出来
         if (copier->init(uri) != 0)
         {
             LOG(ERROR) << "Fail to init copier from " << uri
@@ -694,7 +703,7 @@ namespace braft
             delete copier;
             return NULL;
         }
-        // 开启线程执行LocalSnapshotCopier::copy：
+        // 开启线程执行LocalSnapshotCopier::copy
         copier->start();
         return copier;
     }
@@ -734,6 +743,7 @@ namespace braft
             {
                 break;
             }
+            // 元数据落盘
             ret = writer->sync();
             if (ret != 0)
             {
@@ -752,6 +762,7 @@ namespace braft
             }
 
             // rename temp to new
+            // 将临时文件改名成 last_included_index_${last_included_index}这种形式
             std::string temp_path(_path);
             temp_path.append("/");
             temp_path.append(_s_temp_path);
@@ -906,6 +917,7 @@ namespace braft
                 break;
             }
             // 执行一些清理操作
+            // ??? 不太明白意图 ???
             filter();
             if (!ok())
             {
@@ -953,7 +965,7 @@ namespace braft
             set_error(ECANCELED, "%s", berror(ECANCELED));
             return;
         }
-        // ### 从leader读取meta数据到meta_buf
+        // ### 从leader下载meta数据到meta_buf
         scoped_refptr<RemoteFileCopier::Session> session = _copier.start_to_copy_to_iobuf(BRAFT_SNAPSHOT_META_FILE,
                                                                                           &meta_buf, NULL);
         _cur_session = session.get();
@@ -989,6 +1001,7 @@ namespace braft
         // 对leader的meta信息，从其中查找每一个文件在本地是否存在,如果存在则从 _meta_table 将该meta对应的文件删除
         for (size_t i = 0; i < existing_files.size(); ++i)
         {
+            // 没有找到返回非0
             if (_remote_snapshot.get_file_meta(existing_files[i], NULL) != 0)
             {
                 to_remove.push_back(existing_files[i]);
@@ -1016,6 +1029,7 @@ namespace braft
             LocalFileMeta local_meta;
             if (writer->get_file_meta(filename, &local_meta) == 0)
             {
+                // 本地存在的文件的check_sum和远程的文件的checksum相等，说明文件是一样的，不用处理
                 if (local_meta.has_checksum() &&
                     local_meta.checksum() == remote_meta.checksum())
                 {
@@ -1094,6 +1108,7 @@ namespace braft
         if (_filter_before_copy_remote)
         {
             SnapshotReader *reader = _storage->open();
+            // ###
             if (filter_before_copy(_writer, reader) != 0)
             {
                 LOG(WARNING) << "Fail to filter writer before copying"

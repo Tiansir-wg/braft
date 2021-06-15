@@ -147,6 +147,7 @@ namespace braft
             }
             return;
         }
+        // 如果当前最大的applied_index与上一次快照保存的最大的applied_idnex之间的快照数小于阈值则无法快照
         int64_t saved_fsm_applied_index = _fsm_caller->last_applied_index();
         if (saved_fsm_applied_index - _last_snapshot_index <
             FLAGS_raft_do_snapshot_min_index_gap)
@@ -156,6 +157,8 @@ namespace braft
             // predictable time.
             lck.unlock();
 
+            // 这里将上一次快照最后一个entry及其之前的entry删掉(内存中的)
+            // ?????持久化的entry怎么办?????
             _log_manager->clear_bufferred_logs();
             LOG_IF(INFO, _node != NULL) << "node " << _node->node_id()
                                         << " the gap between fsm applied index " << saved_fsm_applied_index
@@ -183,7 +186,9 @@ namespace braft
             report_error(EIO, "Fail to create SnapshotWriter");
             return;
         }
+        // ###
         _saving_snapshot = true;
+        //
         SaveSnapshotDone *snapshot_save_done = new SaveSnapshotDone(this, writer, done);
         // 用 snapshot_save_done 构造 SNAPSHOT_SAVE 任务并放到队列中去执行
         if (_fsm_caller->on_snapshot_save(snapshot_save_done) != 0)
@@ -208,6 +213,7 @@ namespace braft
         // because upstream Snapshot maybe newer than local Snapshot.
         if (st.ok())
         {
+            // 正在安装的快照比本地快照旧
             if (meta.last_included_index() <= _last_snapshot_index)
             {
                 ret = ESTALE;
@@ -220,8 +226,10 @@ namespace braft
         }
         lck.unlock();
 
+        // 创建快照成功
         if (ret == 0)
         {
+            // 将快照对应的meta存到meta_table中
             if (writer->save_meta(meta))
             {
                 LOG(WARNING) << "node " << _node->node_id() << " fail to save snapshot";
@@ -251,6 +259,7 @@ namespace braft
         lck.lock();
         if (ret == 0)
         {
+            // 更新本地状态
             _last_snapshot_index = meta.last_included_index();
             _last_snapshot_term = meta.last_included_term();
             lck.unlock();
@@ -271,7 +280,7 @@ namespace braft
         return ret;
     }
 
-    //
+    // leader收到follower对InstallSnapshotRPC请求的响应之后的回调
     void SnapshotExecutor::on_snapshot_load_done(const butil::Status &st)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
@@ -281,6 +290,7 @@ namespace braft
 
         if (st.ok())
         {
+            // 更新最后一次快照包含的entry的index和term
             _last_snapshot_index = _loading_snapshot_meta.last_included_index();
             _last_snapshot_term = _loading_snapshot_meta.last_included_term();
             _log_manager->set_snapshot(&_loading_snapshot_meta);
@@ -300,6 +310,7 @@ namespace braft
             _node->update_configuration_after_installing_snapshot();
         }
         lck.lock();
+        // 安装快照操作完成
         _loading_snapshot = false;
         _downloading_snapshot.store(NULL, butil::memory_order_release);
         lck.unlock();
@@ -350,7 +361,7 @@ namespace braft
     {
         SaveSnapshotDone *self = (SaveSnapshotDone *)arg;
         std::unique_ptr<SaveSnapshotDone> self_guard(self);
-        // Must call on_snapshot_save_done to clear _saving_snapshot
+
         // 调用SnapshotExecutor::on_snapshot_save_done
         int ret = self->_se->on_snapshot_save_done(
             self->status(), self->_meta, self->_writer);
@@ -519,6 +530,7 @@ namespace braft
         return load_downloading_snapshot(ds.release(), meta);
     }
 
+    // 加载快照
     void SnapshotExecutor::load_downloading_snapshot(DownloadingSnapshot *ds,
                                                      const SnapshotMeta &meta)
     {

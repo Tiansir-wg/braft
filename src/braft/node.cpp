@@ -93,11 +93,13 @@ namespace braft
     public:
         void Run()
         {
+            // 对方节点配置更新操作成功了
             if (status().ok())
             {
                 _node->on_configuration_change_done(_term);
                 if (_leader_start)
                 {
+                    // 更新leader的租约
                     _node->leader_lease_start(_lease_epoch);
                     _node->_options.fsm->on_leader_start(_term);
                 }
@@ -748,6 +750,7 @@ namespace braft
             // Callback from older version
             return;
         }
+        // 当前的配置状态是 STAGE_JOINT, 要转换为STAGE_STABLE
         _conf_ctx.next_stage();
     }
 
@@ -796,12 +799,14 @@ namespace braft
             return;
         }
 
+        //  追赶过程成功了
         if (st.ok())
         { // Caught up successfully
             _conf_ctx.on_caughtup(version, peer, true);
             return;
         }
 
+        // 失败了就重试，前提是节点得活着
         // Retry if this peer is still alive
         if (st.error_code() == ETIMEDOUT && (butil::monotonic_time_ms() - _replicator_group.last_rpc_send_timestamp(peer)) <= _options.election_timeout_ms)
         {
@@ -813,6 +818,7 @@ namespace braft
             timespec due_time = butil::milliseconds_from_now(
                 _options.get_catchup_timeout_ms());
 
+            //  #####
             if (0 == _replicator_group.wait_caughtup(
                          peer, _options.catchup_margin, &due_time, caught_up))
             {
@@ -908,6 +914,7 @@ namespace braft
                          << state2str(_state);
             if (done)
             {
+                // 这两种情况虽然执行了回调函数，但是在回调函数开始判断状态时就无法通过
                 if (_state == STATE_TRANSFERRING)
                 {
                     done->status().set_error(EBUSY, "Is transferring leadership");
@@ -922,7 +929,15 @@ namespace braft
         }
 
         // check concurrent conf change
-        // 当前节点是leader，但是_conf_ctx处于忙碌状态，即有另一个配置变更在发生
+
+        // 当前节点是leader，但是_conf_ctx处于忙碌状态，表示有另一个配置变更在发生
+        // 一共有四个配置变更相关的状态
+        // STAGE_NONE = 0,
+        // STAGE_CATCHING_UP = 1, // 追赶状态, 如果有新的节点加入就需要追赶之后再配置变更
+        // STAGE_JOINT = 2,   // 一致状态，新旧配置共同起作用
+        // STAGE_STABLE = 3,
+
+        // 这里的判断条件是state不是STAGE_NONE状态，也就是说只有 _stage == STAGE_NONE 时才能进行配置变更
         if (_conf_ctx.is_busy())
         {
             LOG(WARNING) << "[" << node_id()
@@ -1191,6 +1206,8 @@ namespace braft
     {
         brpc::ClosureGuard done_guard(done);
         std::unique_lock<raft_mutex_t> lck(_mutex);
+
+        // 目标节点的term必须和leader的term相等才行，因为原leader下线是通过向其返回更大的term进行的
         if (request->term() != _current_term)
         {
             const int64_t saved_current_term = _current_term;
@@ -1210,6 +1227,7 @@ namespace braft
                       << request->term();
             return;
         }
+
         if (_state != STATE_FOLLOWER)
         {
             const State saved_state = _state;
@@ -1234,12 +1252,14 @@ namespace braft
         }
         else
         {
-            // Increase term to make leader step down
+            // 向leader响应更大term使其step_down
             response->set_term(_current_term + 1);
         }
         response->set_success(true);
         // Parallelize Response and election
         run_closure_in_bthread(done_guard.release());
+
+        // 直接发起正式投票请求
         elect_self(&lck);
         // Don't touch any mutable field after this point, it's likely out of the
         // critical section
@@ -1280,6 +1300,7 @@ namespace braft
         delete a;
     }
 
+    // leader转让领导权超时后的处理
     void NodeImpl::handle_transfer_timeout(int64_t term, const PeerId &peer)
     {
         LOG(INFO) << "node " << node_id() << " failed to transfer leadership to peer="
@@ -1292,6 +1313,7 @@ namespace braft
             {
                 _leader_lease.on_leader_start(term);
                 _fsm_caller->on_leader_start(term, _leader_lease.lease_epoch());
+                // 将状态改回来
                 _state = STATE_LEADER;
                 _stop_transfer_arg = NULL;
             }
@@ -1328,28 +1350,26 @@ namespace braft
         }
 
         PeerId peer_id = peer;
-        // if peer_id is ANY_PEER(0.0.0.0:0:0), the peer with the largest
-        // last_log_id will be selected.
+
         // 没有指定目标peer节点
         if (peer_id == ANY_PEER)
         {
             LOG(INFO) << "node " << _group_id << ":" << _server_id
                       << " starts to transfer leadership to any peer.";
-            // find the next candidate which is the most possible to become new leader
             // 从 _replicator_group 中找一个next_index最大的节点作为目标节点
             if (_replicator_group.find_the_next_candidate(&peer_id, _conf) != 0)
             {
                 return -1;
             }
         }
-        // 目标节点是自身
+        // 目标节点是自身就不用继续操作了
         if (peer_id == _server_id)
         {
             LOG(INFO) << "node " << _group_id << ":" << _server_id
                       << " transfering leadership to self";
             return 0;
         }
-        // 目标节点不在配置中
+        // 目标节点不在配置的节点集合中，显然这个操作是不合法的
         if (!_conf.contains(peer_id))
         {
             LOG(WARNING) << "node " << _group_id << ":" << _server_id
@@ -2461,11 +2481,14 @@ namespace braft
             entry->old_peers = new std::vector<PeerId>;
             old_conf->list_peers(entry->old_peers);
         }
+
+        //
         ConfigurationChangeDone *configuration_change_done =
             new ConfigurationChangeDone(this, _current_term, leader_start, _leader_lease.lease_epoch());
         // Use the new_conf to deal the quorum of this very log
 
         // 将任务放到投票箱获取投票, 成功提交后执行 ConfigurationChangeDone::Run, 进入下一个阶段
+        // 这里有两种配置，因此有两种法定票数，只要有一种能够减到0就表示这个配置entry可以commit了。
         _ballot_box->append_pending_task(new_conf, old_conf, configuration_change_done);
 
         std::vector<LogEntry *> entries;
@@ -2475,7 +2498,7 @@ namespace braft
                                      new LeaderStableClosure(
                                          NodeId(_group_id, _server_id),
                                          1u, _ballot_box));
-
+        // 这里就是检查_conf是不是最新配置，如果不是就设置为最新配置
         _log_manager->check_and_set_configuration(&_conf);
     }
 
@@ -3878,13 +3901,15 @@ namespace braft
         adding.list_peers(&_adding_peers);
         for (std::set<PeerId>::const_iterator iter = _adding_peers.begin(); iter != _adding_peers.end(); ++iter)
         {
-            // 将新加的节点加入到 _replicator_group 中
+            // 为新节点创建并启动replicator并加入到 _replicator_group 中
             if (_node->_replicator_group.add_replicator(*iter) != 0)
             {
                 LOG(ERROR) << "node " << _node->node_id()
                            << " start replicator failed, peer " << *iter;
                 return on_caughtup(_version, *iter, false);
             }
+            //#######
+            // 回调函数执行的是 NodeImpl::on_caughtup
             OnCaughtUp *caught_up = new OnCaughtUp(
                 _node, _node->_current_term, *iter, _version);
             timespec due_time = butil::milliseconds_from_now(
@@ -3893,6 +3918,7 @@ namespace braft
             // 调用_node->_replicator_group.wait_caughtup，等到新节点的日志追赶成功就调用回调进入下一个stage
             // 如果超时了还没有赶上，并且节点还存活着就重试
             // 是否追赶上的判断标志是新加入节点和leader之间的log index的差距小于catchup_margin, catchup_margin由NodeOption中的catchup_margin变量指定，默认是1000
+            // 这里就是等待该节点追赶上leader，追赶上了就执行回调函数
             if (_node->_replicator_group.wait_caughtup(
                     *iter, _node->_options.catchup_margin, &due_time, caught_up) != 0)
             {
@@ -3941,6 +3967,7 @@ namespace braft
             _adding_peers.erase(peer_id);
             if (_adding_peers.empty())
             {
+                // 当前配置状态是 STAGE_CATCHING_UP， 修改为 STAGE_JOINT，然后执行unsafe_apply_configuration
                 return next_stage();
             }
             return;
@@ -3962,6 +3989,7 @@ namespace braft
         switch (_stage)
         {
         case STAGE_CATCHING_UP:
+            // _nchanges 表示要配置更新的节点数 ，大于1表示还有节点未处理
             if (_nchanges > 1)
             {
                 _stage = STAGE_JOINT;
@@ -3980,7 +4008,7 @@ namespace braft
                 Configuration(_new_peers), NULL, false);
         case STAGE_STABLE:
         {
-            // 判断当前节点是否在新配置
+            // 检查当前leader是否还在新节点列表中，如果不在就step_down
             bool should_step_down =
                 _new_peers.find(_node->_server_id) == _new_peers.end();
             butil::Status st = butil::Status::OK();

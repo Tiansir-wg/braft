@@ -202,7 +202,7 @@ namespace braft
         }
     }
 
-        LogId LogManager::last_log_id(bool is_flush)
+    LogId LogManager::last_log_id(bool is_flush)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
         if (!is_flush)
@@ -293,6 +293,8 @@ namespace braft
         // container in O(1) time, one solution is a segmented double-linked list
         // along with a bounded queue as the indexer, of which the payoff is that
         // _logs_in_memory has to be bounded.
+
+        // 将_logs_in_memory中first_index_kept之前的entry移除
         while (!_logs_in_memory.empty())
         {
             LogEntry *entry = _logs_in_memory.front();
@@ -307,12 +309,15 @@ namespace braft
             }
         }
         CHECK_GE(first_index_kept, _first_log_index);
+        /// ????
         _first_log_index = first_index_kept;
         if (first_index_kept > _last_log_index)
         {
             // The entrie log is dropped
             _last_log_index = first_index_kept - 1;
         }
+
+        // 这里就是将first_index_kept之前的所有配置entry从内存移除
         _config_manager->truncate_prefix(first_index_kept);
         TruncatePrefixClosure *c = new TruncatePrefixClosure(first_index_kept);
         const int rc = bthread::execution_queue_execute(_disk_queue, c);
@@ -525,7 +530,7 @@ namespace braft
         {
             // Add ref for disk_thread
             (*entries)[i]->AddRef();
-            // 如果是存放配置信息的 entry 则将其交给 _config_manager 进行管理
+            // 如果是存放配置信息的 entry 则将其交给 _config_manager 进行管理，其实就是保存到了 _configurations 队列
             if ((*entries)[i]->type == ENTRY_TYPE_CONFIGURATION)
             {
                 ConfigurationEntry conf_entry(*((*entries)[i]));
@@ -977,6 +982,7 @@ namespace braft
         BAIDU_SCOPED_LOCK(_mutex);
 
         // 获取新配置
+        // 因为上一步已经将这个配置加到了_configurations中
         const ConfigurationEntry &last_conf = _config_manager->last_configuration();
         // 当前配置不是新配置则将新配置设置为 current
         if (current->id != last_conf.id)

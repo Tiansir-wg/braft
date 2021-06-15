@@ -189,15 +189,19 @@ namespace braft
             return;
         }
         done->_max_margin = max_margin;
+        // 判断是否追赶上
         if (r->_has_succeeded && r->_is_catchup(max_margin))
         {
             LOG(INFO) << "Already catch up before add catch up timer"
                       << ", group " << r->_options.group_id;
+            // 调用回调函数
             run_closure_in_bthread(done);
             CHECK_EQ(0, bthread_id_unlock(dummy_id))
                 << "Fail to unlock" << dummy_id;
             return;
         }
+        // 如果设置了超时时间，那么就需要一个超时计时器，等到超时后执行_on_catch_up_timedout
+        // 进行重试
         if (due_time != NULL)
         {
             done->_has_timer = true;
@@ -968,7 +972,7 @@ namespace braft
             node_impl->Release();
             return;
         }
-        // 函数会通过调用file_service_add把reader添加到file_service里面，然后返回一个uri, follower通过uri去下载快照文件。
+        // 函数会通过调用file_service_add把reader添加到file_service里面(内部维护了reader_id和Reader对象的映射)，然后返回一个uri, follower通过uri去下载快照文件。
         // uri的格式为："remote://" + _addr + "/" + _reader_id
         std::string uri = _reader->generate_uri_for_copy();
         // NOTICE: If uri is something wrong, retry later instead of reporting error
@@ -1032,7 +1036,7 @@ namespace braft
         CHECK_EQ(0, bthread_id_unlock(_id)) << "Fail to unlock " << _id;
     }
 
-    //
+    // 结点收到follower对InstallSnapshotRPC请求的响应之后的回调
     void Replicator::_on_install_snapshot_returned(
         ReplicatorId id, brpc::Controller *cntl,
         InstallSnapshotRequest *request,
@@ -1274,6 +1278,7 @@ namespace braft
 
     int Replicator::_transfer_leadership(int64_t log_index)
     {
+        // _min_flying_index是啥??????
         if (_has_succeeded && _min_flying_index() > log_index)
         {
             // _id is unlock in _send_timeout_now
@@ -1334,6 +1339,7 @@ namespace braft
             cntl->set_timeout_ms(timeout_ms);
         }
         RaftService_Stub stub(&_sending_channel);
+        // 收到响应后调用_on_timeout_now_returned
         ::google::protobuf::Closure *done = brpc::NewCallback(
             _on_timeout_now_returned, _id.value, cntl, request, response,
             stop_after_finish);
@@ -1396,6 +1402,7 @@ namespace braft
                                                   "timeout_now_response from peer:%s",
                              r->_options.peer_id.to_string().c_str());
             r->_destroy();
+            // leader节点step_down
             node_impl->increase_term_to(response->term(), status);
             node_impl->Release();
             return;
@@ -1675,12 +1682,14 @@ namespace braft
                                        int64_t max_margin, const timespec *due_time,
                                        CatchupClosure *done)
     {
+        // 该peer对应的replicator必须得存在才行
         std::map<PeerId, ReplicatorIdAndStatus>::iterator iter = _rmap.find(peer);
         if (iter == _rmap.end())
         {
             return -1;
         }
         ReplicatorId rid = iter->second.id;
+        ///####
         Replicator::wait_for_caught_up(rid, max_margin, due_time, done);
         return 0;
     }
@@ -1821,12 +1830,15 @@ namespace braft
                  iter = _rmap.begin();
              iter != _rmap.end(); ++iter)
         {
+            // 选择的节点必须得在配置的节点集合中
             if (!conf.contains(iter->first))
             {
                 continue;
             }
+            // 获取该节点的下一个发送entry的位置
             const int64_t next_index = Replicator::get_next_index(iter->second.id);
             const int consecutive_error_times = Replicator::get_consecutive_error_times(iter->second.id);
+            // 选择一个next_index最大的
             if (consecutive_error_times == 0 && next_index > max_index)
             {
                 max_index = next_index;

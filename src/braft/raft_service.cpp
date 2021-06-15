@@ -168,6 +168,7 @@ namespace braft
         brpc::Controller *cntl =
             static_cast<brpc::Controller *>(controller);
 
+        // 解析目标节点ID
         PeerId peer_id;
         if (0 != peer_id.parse(request->peer_id()))
         {
@@ -176,6 +177,7 @@ namespace braft
             return;
         }
 
+        // follower确定该节点存在
         scoped_refptr<NodeImpl> node_ptr =
             global_node_manager->get(request->group_id(), peer_id);
         NodeImpl *node = node_ptr.get();

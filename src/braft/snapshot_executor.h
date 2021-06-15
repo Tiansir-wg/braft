@@ -148,8 +148,8 @@ namespace braft
         void report_error(int error_code, const char *fmt, ...);
 
         raft_mutex_t _mutex;
-        int64_t _last_snapshot_term;
-        int64_t _last_snapshot_index;
+        int64_t _last_snapshot_term;  // 最近一次快照操作中保存的最大的applied_index处的entry对应的term
+        int64_t _last_snapshot_index; // 最近一次快照操作中保存的最大的applied_index
         int64_t _term;
         bool _saving_snapshot;  // 是否正在保存快照
         bool _loading_snapshot; // 是否在正加载快照

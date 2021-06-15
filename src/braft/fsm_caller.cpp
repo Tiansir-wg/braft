@@ -392,16 +392,22 @@ namespace braft
 
         SnapshotMeta meta;
         // 设置meta
+        // last_included_index就是last_applied_index
+        // last_included_term就是_last_applied_term
         meta.set_last_included_index(last_applied_index);
         meta.set_last_included_term(_last_applied_term);
         ConfigurationEntry conf_entry;
+        // 获取last_applied_index位置之前的最后一个配置entry
         _log_manager->get_configuration(last_applied_index, &conf_entry);
+        // 该配置下所有的peer
         for (Configuration::const_iterator
                  iter = conf_entry.conf.begin();
              iter != conf_entry.conf.end(); ++iter)
         {
             *meta.add_peers() = iter->to_string();
         }
+
+        // 应用该配置前的所有peer
         for (Configuration::const_iterator
                  iter = conf_entry.old_conf.begin();
              iter != conf_entry.old_conf.end(); ++iter)
@@ -409,7 +415,9 @@ namespace braft
             *meta.add_old_peers() = iter->to_string();
         }
 
-        // ??? writer 从哪里来的 ???
+        // SnapshotWriter *writer = _snapshot_storage->create();
+        // 这个writer会存到done里面， 这里就是获取这个Writer
+        // 这里同时会将meta设置到done里面，用户自定义的状态机的on_snapshot_save方法里面就能够获取到这些meta了
         SnapshotWriter *writer = done->start(meta);
         if (!writer)
         {
@@ -418,7 +426,7 @@ namespace braft
             return;
         }
 
-        // 在on_snapshot_save里面利用自定义的writer去写snapshot文件
+        // 这里就是调用自定义状态机的on_snapshot_save方法了
         _fsm->on_snapshot_save(writer, done);
         return;
     }
@@ -442,6 +450,7 @@ namespace braft
             return;
         }
 
+        // 加载meta数据
         SnapshotMeta meta;
         int ret = reader->load_meta(&meta);
         if (0 != ret)
@@ -464,6 +473,8 @@ namespace braft
         LogId snapshot_id;
         snapshot_id.index = meta.last_included_index();
         snapshot_id.term = meta.last_included_term();
+
+        // 比较本地的状态机数据和快照中的数据哪个更新，通过将last_log_index和last_log_term与快照中的last_log_index和last_log_term进行比较
         if (last_applied_id > snapshot_id)
         {
             done->status().set_error(ESTALE, "Loading a stale snapshot"
