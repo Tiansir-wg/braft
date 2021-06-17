@@ -169,7 +169,7 @@ namespace braft
         //
         // handle received PreVote
         int handle_pre_vote_request(const RequestVoteRequest *request,
-                                    RequestVoteResponse *response);
+                                    RequestVoteResponse *response, brpc::Controller *cntl = NULL);
         // handle received RequestVote
         int handle_request_vote_request(const RequestVoteRequest *request,
                                         RequestVoteResponse *response);
@@ -202,7 +202,7 @@ namespace braft
         //
         void handle_pre_vote_response(const PeerId &peer_id, const int64_t term,
                                       const int64_t ctx_version,
-                                      const RequestVoteResponse &response);
+                                      const RequestVoteResponse &response, const brpc::Controller &controller);
         void handle_request_vote_response(const PeerId &peer_id, const int64_t term,
                                           const int64_t ctx_version,
                                           const RequestVoteResponse &response);

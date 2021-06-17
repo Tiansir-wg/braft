@@ -1709,7 +1709,7 @@ namespace braft
     // 节点收到其他节点对preVote rpc请求的响应后实际的处理逻辑
     void NodeImpl::handle_pre_vote_response(const PeerId &peer_id, const int64_t term,
                                             const int64_t ctx_version,
-                                            const RequestVoteResponse &response)
+                                            const RequestVoteResponse &response, const brpc::Controller &cntl)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
 
@@ -1741,6 +1741,61 @@ namespace braft
                          << " term " << term << " current_term " << _current_term;
             return;
         }
+
+        ////////////////////
+        ////////////////////
+        butil::IOBuf data_buf;
+        butil::IOBuf response_buf = cntl.response_attachment();
+        data_buf.swap(response_buf);
+        std::vector<LogEntry *>
+            entries;
+        entries.reserve(response.entries_size());
+        for (int i = 0; i < response.entries_size(); i++)
+        {
+            const EntryMeta &entry = response.entries(i);
+            if (entry.type() != ENTRY_TYPE_UNKNOWN)
+            {
+                LogEntry *log_entry = new LogEntry();
+                log_entry->AddRef();
+                log_entry->id.term = entry.term();
+                log_entry->id.index = entry.index();
+                log_entry->type = (EntryType)entry.type();
+                if (entry.peers_size() > 0)
+                {
+                    log_entry->peers = new std::vector<PeerId>;
+                    for (int i = 0; i < entry.peers_size(); i++)
+                    {
+                        log_entry->peers->push_back(entry.peers(i));
+                    }
+                    CHECK_EQ(log_entry->type, ENTRY_TYPE_CONFIGURATION);
+                    if (entry.old_peers_size() > 0)
+                    {
+                        log_entry->old_peers = new std::vector<PeerId>;
+                        for (int i = 0; i < entry.old_peers_size(); i++)
+                        {
+                            log_entry->old_peers->push_back(entry.old_peers(i));
+                        }
+                    }
+                }
+                else
+                {
+                    CHECK_NE(entry.type(), ENTRY_TYPE_CONFIGURATION);
+                }
+                if (entry.has_data_len())
+                {
+                    int len = entry.data_len();
+                    data_buf.cutn(&log_entry->data, len);
+                }
+                entries.push_back(log_entry);
+            }
+        }
+
+        // 收到其他节点补充的entry之后需要将这些entry按位置放回到自己的entry数组中
+        // !!!待完成
+        // 需要了解logs_in_memory的结构, 和append_entry有关。
+
+        ////////////////////
+        ////////////////////
         // check response term
         // 检查response中的term，如果大于自身的term，则执行 step_down 并更新 term 值。
         if (response.term() > _current_term)
@@ -1841,7 +1896,7 @@ namespace braft
                                  << " error: " << cntl.ErrorText();
                     break;
                 }
-                node->handle_pre_vote_response(peer, term, ctx_version, response);
+                node->handle_pre_vote_response(peer, term, ctx_version, response, cntl);
             } while (0);
             delete this;
         }
@@ -2503,7 +2558,7 @@ namespace braft
     }
 
     int NodeImpl::handle_pre_vote_request(const RequestVoteRequest *request,
-                                          RequestVoteResponse *response)
+                                          RequestVoteResponse *response, brpc::Controller *cntl)
     {
         std::unique_lock<raft_mutex_t> lck(_mutex);
 
@@ -2585,8 +2640,6 @@ namespace braft
         //////////////
         //  不管给不给他投票都把对方缺失的日志发过去
 
-        // 未完成---怎么在响应中发送attachment
-
         int64_t last_applied_index = request->last_applied_index();
         int bits_size = request->bits_size();
         int64_t last_log_index = _log_manager->last_log_index();
@@ -2599,7 +2652,7 @@ namespace braft
             {
                 continue;
             }
-            // 对方没有
+            // 对方没有就发过去
             else
             {
                 EntryMeta em;
@@ -2627,6 +2680,8 @@ namespace braft
                     }
                 }
                 em.set_data_len(entry->data.length());
+                em.set_index(i);
+                cntl->response_attachment().append(entry->data);
                 entry->Release();
                 response->add_entries()->Swap(&em);
             }
@@ -2887,6 +2942,7 @@ namespace braft
     };
 
     // 节点接收到 _append_entries_ 请求后的处理
+    // from_append_entries_cache默认是false
     void NodeImpl::handle_append_entries_request(brpc::Controller *cntl,
                                                  const AppendEntriesRequest *request,
                                                  AppendEntriesResponse *response,

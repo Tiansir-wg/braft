@@ -58,7 +58,7 @@ namespace braft
 
         // TODO: should return butil::Status
         // 实际处理pre_vote请求的地方
-        int rc = node->handle_pre_vote_request(request, response);
+        int rc = node->handle_pre_vote_request(request, response, cntl);
         if (rc != 0)
         {
             cntl->SetFailed(rc, "%s", berror(rc));
