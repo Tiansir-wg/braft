@@ -2557,6 +2557,11 @@ namespace braft
         _log_manager->check_and_set_configuration(&_conf);
     }
 
+    // 处理预投票请求
+    // 给对方投票的标准:
+    // 1. 当前节点的term值大于等于请求携带的term
+    // 2. 当前节点的log比请求节点的log新(先比较term，term大的更新，term相同时比较index，index大的更新)
+    // 3. 以上两个条件可以保证投票，但不保证能够使请求节点的Ballot减1，因为还需要判断租约是否过期。如果没到期即使满足投票条件，请求节点也不能将法定票数减1
     int NodeImpl::handle_pre_vote_request(const RequestVoteRequest *request,
                                           RequestVoteResponse *response, brpc::Controller *cntl)
     {
@@ -2613,6 +2618,7 @@ namespace braft
             int64_t votable_time = _follower_lease.votable_time_from_now();
             // 只有请求的节点的日志比当前节点的日志更新才能够投票给它，判断更新的原则是:
             // term相等则比较index,index更大日志更新；否则term大的日志更新
+            // !!!也就是说比较那个日志更新是先比较term再比较index的!!!
             bool grantable = (LogId(request->last_log_index(), request->last_log_term()) >= last_log_id);
             // 到这里说明是满足执行条件的，因为对方的日志比自己新；但是如果租约还没到期也要拒绝
             if (grantable)

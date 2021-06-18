@@ -225,7 +225,7 @@ namespace braft
         int64_t _first_log_index; // _logs_in_memory 数组中第一个entry的index
         int64_t _last_log_index;  // _logs_in_memory 数组中最后一个entry的index
         // the last snapshot's log_id
-        LogId _last_snapshot_id;
+        LogId _last_snapshot_id; // snapshot中最后一个log entry的index和term
         // the virtual first log, for finding next_index of replicator, which
         // can avoid install_snapshot too often in extreme case where a follower's
         // install_snapshot is slower than leader's save_snapshot
